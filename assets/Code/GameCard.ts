@@ -130,7 +130,7 @@ export class GameCard extends Component {
       return;
     }
 
-    setSpriteFrame(this.artSprite, await loadCardFaceSpriteFrame(definition.imageId));
+    setSpriteFrame(this.artSprite, await loadCardFaceSpriteFrame(definition.id));
   }
 
   private playFlipHalf(scale: Vec3): Promise<void> {

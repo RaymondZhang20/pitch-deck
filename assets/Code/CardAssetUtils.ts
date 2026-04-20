@@ -11,8 +11,11 @@ export function loadCardTypeSpriteFrame(type: CardType): Promise<SpriteFrame> {
   return loadSpriteFrame(`cards/type-${type}/spriteFrame`);
 }
 
-export function loadCardFaceSpriteFrame(imageId: string): Promise<SpriteFrame> {
-  return loadSpriteFrame(`cards/face-${imageId}/spriteFrame`);
+export function loadCardFaceSpriteFrame(cardId: number): Promise<SpriteFrame> {
+  const cardKey = cardId.toString().padStart(3, "0");
+  return loadSpriteFrame(`cards/face-${cardKey}/spriteFrame`).catch(() =>
+    loadSpriteFrame("cards/notfound/spriteFrame"),
+  );
 }
 
 export function setSpriteFrame(

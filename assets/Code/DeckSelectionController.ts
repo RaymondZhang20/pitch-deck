@@ -4,11 +4,11 @@ import {
   Component,
   instantiate,
   Label,
-  Layout,
   Node,
   Prefab,
   resources,
   UITransform,
+  Vec3,
   Widget,
 } from "cc";
 import { getAllCardDefinitions } from "./CardCatalog";
@@ -29,104 +29,139 @@ export class DeckSelectionController extends Component {
       return;
     }
 
-    const root = this.ensureRoot(canvas);
-    root.removeAllChildren();
-    this.createTitle(root);
+    this.renderTitle(canvas);
 
-    const grid = this.createGrid(root);
+    const grid = this.ensureCardGrid(canvas);
+    grid.removeAllChildren();
+
     const prefab = await this.loadPrefab();
     const cards = getAllCardDefinitions().slice(0, 6);
+    const cardWidth = 176;
+    const cardHeight = 262;
+    const spacingX = 10;
+    const spacingY = 14;
+    const columns = 3;
 
-    for (const card of cards) {
+    for (let index = 0; index < cards.length; index += 1) {
+      const card = cards[index];
       const cardNode = instantiate(prefab);
       grid.addChild(cardNode);
 
       const gameCard = cardNode.getComponent(GameCard);
       if (gameCard) {
-        gameCard.setCardSize(210, 312);
+        gameCard.setCardSize(cardWidth, cardHeight);
         await gameCard.configure(card.id);
       }
+
+      this.positionCard(cardNode, index, {
+        cardWidth,
+        cardHeight,
+        spacingX,
+        spacingY,
+        columns,
+      });
     }
   }
 
-  private ensureRoot(canvas: Node): Node {
-    let root = canvas.getChildByName("DeckSelectionContent");
-    if (root) {
-      return root;
+  private renderTitle(canvas: Node): void {
+    let titleNode = canvas.getChildByName("DeckSelectionTitle");
+    if (!titleNode) {
+      titleNode = new Node("DeckSelectionTitle");
+      canvas.addChild(titleNode);
+
+      const transform = titleNode.addComponent(UITransform);
+      transform.setContentSize(670, 120);
+
+      const widget = titleNode.addComponent(Widget);
+      widget.isAlignTop = true;
+      widget.isAlignLeft = true;
+      widget.isAlignRight = true;
+      widget.top = 150;
+      widget.left = 40;
+      widget.right = 40;
+      widget.alignMode = 2;
+
+      const label = titleNode.addComponent(Label);
+      label.fontSize = 40;
+      label.lineHeight = 48;
+      label.isBold = true;
+      label.color = new Color(255, 255, 255, 255);
+      label.horizontalAlign = Label.HorizontalAlign.CENTER;
+      label.enableWrapText = true;
     }
 
-    root = new Node("DeckSelectionContent");
-    canvas.addChild(root);
-
-    const transform = root.addComponent(UITransform);
-    transform.setContentSize(750, 1624);
-
-    const widget = root.addComponent(Widget);
-    widget.isAlignLeft = true;
-    widget.isAlignRight = true;
-    widget.isAlignTop = true;
-    widget.isAlignBottom = true;
-    widget.left = 0;
-    widget.right = 0;
-    widget.top = 0;
-    widget.bottom = 0;
-    widget.alignMode = 2;
-
-    const layout = root.addComponent(Layout);
-    layout.type = Layout.Type.VERTICAL;
-    layout.resizeMode = Layout.ResizeMode.CONTAINER;
-    layout.verticalDirection = Layout.VerticalDirection.TOP_TO_BOTTOM;
-    layout.paddingTop = 180;
-    layout.paddingBottom = 80;
-    layout.spacingY = 48;
-
-    return root;
-  }
-
-  private createTitle(parent: Node): void {
-    const titleNode = new Node("Title");
-    parent.addChild(titleNode);
-
-    const transform = titleNode.addComponent(UITransform);
-    transform.setContentSize(750, 100);
-
-    const label = titleNode.addComponent(Label);
-    label.string = "\u62bd\u5230\u7684\u5361\u724c";
-    label.fontSize = 48;
-    label.lineHeight = 54;
-    label.isBold = true;
-    label.color = new Color(255, 255, 255, 255);
-    label.horizontalAlign = Label.HorizontalAlign.CENTER;
+    const label = titleNode.getComponent(Label);
+    if (!label) {
+      return;
+    }
 
     const matchInfo = getSelectedMatchInfo();
     if (matchInfo) {
-      label.string = `\u62bd\u5230\u7684\u5361\u724c\n${matchInfo.matchId}  ${matchInfo.homeCountryId} vs ${matchInfo.awayCountryId}`;
-      label.fontSize = 40;
-      label.lineHeight = 48;
+      label.string = `抽到的卡牌\n${matchInfo.matchId}  ${matchInfo.homeCountryId} vs ${matchInfo.awayCountryId}`;
+      return;
     }
+
+    label.string = "抽到的卡牌";
   }
 
-  private createGrid(parent: Node): Node {
-    const grid = new Node("CardGrid");
-    parent.addChild(grid);
+  private ensureCardGrid(canvas: Node): Node {
+    let grid = canvas.getChildByName("CardGrid");
+    if (!grid) {
+      grid = new Node("CardGrid");
+      canvas.addChild(grid);
 
-    const transform = grid.addComponent(UITransform);
-    transform.setContentSize(750, 760);
+      const transform = grid.addComponent(UITransform);
+      transform.setContentSize(548, 1124);
 
-    const layout = grid.addComponent(Layout);
-    layout.type = Layout.Type.GRID;
-    layout.resizeMode = Layout.ResizeMode.CONTAINER;
-    layout.startAxis = Layout.AxisDirection.HORIZONTAL;
-    layout.horizontalDirection = Layout.HorizontalDirection.LEFT_TO_RIGHT;
-    layout.verticalDirection = Layout.VerticalDirection.TOP_TO_BOTTOM;
-    layout.constraint = Layout.Constraint.FIXED_COL;
-    layout.constraintNum = 3;
-    layout.spacingX = 24;
-    layout.spacingY = 36;
-    layout.paddingLeft = 36;
-    layout.paddingRight = 36;
+      const widget = grid.addComponent(Widget);
+      widget.isAlignHorizontalCenter = true;
+      widget.isAlignTop = true;
+      widget.isAlignBottom = true;
+      widget.horizontalCenter = 0;
+      widget.top = 300;
+      widget.bottom = 200;
+      widget.alignMode = 2;
+    }
+
+    const transform = grid.getComponent(UITransform);
+    transform?.setContentSize(548, 1124);
+
+    const widget = grid.getComponent(Widget);
+    if (widget) {
+      widget.isAlignLeft = false;
+      widget.isAlignRight = false;
+      widget.isAlignHorizontalCenter = true;
+      widget.horizontalCenter = 0;
+      widget.isAlignTop = true;
+      widget.isAlignBottom = true;
+      widget.top = 300;
+      widget.bottom = 200;
+      widget.alignMode = 2;
+      widget.updateAlignment();
+    }
 
     return grid;
+  }
+
+  private positionCard(
+    cardNode: Node,
+    index: number,
+    options: {
+      cardWidth: number;
+      cardHeight: number;
+      spacingX: number;
+      spacingY: number;
+      columns: number;
+    },
+  ): void {
+    const { cardWidth, cardHeight, spacingX, spacingY, columns } = options;
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const totalWidth = columns * cardWidth + (columns - 1) * spacingX;
+    const x = -totalWidth / 2 + cardWidth / 2 + column * (cardWidth + spacingX);
+    const y = -cardHeight / 2 - row * (cardHeight + spacingY);
+
+    cardNode.setPosition(new Vec3(x, y, 0));
   }
 
   private loadPrefab(): Promise<Prefab> {

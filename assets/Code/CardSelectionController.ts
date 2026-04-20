@@ -91,7 +91,7 @@ export class CardSelectionController extends Component {
     transform.setContentSize(200, 48);
 
     const label = buttonNode.addComponent(Label);
-    label.string = "< \u8fd4\u56de";
+    label.string = "< 返回";
     label.fontSize = 34;
     label.lineHeight = 40;
     label.color = new Color(255, 255, 255, 255);
