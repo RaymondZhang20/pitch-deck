@@ -1,6 +1,6 @@
 import {
   _decorator,
-  assetManager,
+  Button,
   Component,
   director,
   instantiate,
@@ -10,6 +10,7 @@ import {
   Mask,
   Node,
   Prefab,
+  resources,
   ScrollView,
   Size,
   Sprite,
@@ -18,10 +19,12 @@ import {
   Widget,
 } from "cc";
 import { setFlagByCode } from "./FlagUtils";
+import { setSelectedMatchInfo } from "./MatchSelectionState";
 
 const { ccclass, property } = _decorator;
 
 type MatchExample = {
+  matchId: string;
   time: string;
   status: string;
   homeTeam: string;
@@ -32,10 +35,9 @@ type MatchExample = {
 
 @ccclass("PredictionListController")
 export class PredictionListController extends Component {
-  private static readonly MATCH_ITEM_PREFAB_UUID =
-    "449bc894-71b2-412a-905a-c3cbc4b72043";
   private static readonly EXAMPLES: MatchExample[] = [
     {
+      matchId: "match-001",
       time: "06/18 20:00",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u65e5\u672c",
@@ -44,6 +46,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "kr",
     },
     {
+      matchId: "match-002",
       time: "06/19 19:30",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u7f8e\u56fd",
@@ -52,6 +55,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "mx",
     },
     {
+      matchId: "match-003",
       time: "06/20 18:00",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u82f1\u683c\u5170",
@@ -60,6 +64,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "pt",
     },
     {
+      matchId: "match-004",
       time: "06/21 21:15",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u5df4\u897f",
@@ -68,6 +73,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "ar",
     },
     {
+      matchId: "match-005",
       time: "06/22 17:45",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u897f\u73ed\u7259",
@@ -76,6 +82,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "fr",
     },
     {
+      matchId: "match-006",
       time: "06/23 19:00",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u8377\u5170",
@@ -84,6 +91,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "de",
     },
     {
+      matchId: "match-007",
       time: "06/24 20:30",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u97e9\u56fd",
@@ -92,6 +100,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "au",
     },
     {
+      matchId: "match-008",
       time: "06/25 18:30",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u6469\u6d1b\u54e5",
@@ -100,6 +109,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "ng",
     },
     {
+      matchId: "match-009",
       time: "06/26 22:00",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u514b\u7f57\u5730\u4e9a",
@@ -108,6 +118,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "ch",
     },
     {
+      matchId: "match-010",
       time: "06/27 16:00",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u58a8\u897f\u54e5",
@@ -116,6 +127,7 @@ export class PredictionListController extends Component {
       awayFlagCode: "ca",
     },
     {
+      matchId: "match-011",
       time: "06/28 20:45",
       status: "\u672a\u5f00\u59cb",
       homeTeam: "\u5361\u5854\u5c14",
@@ -163,9 +175,7 @@ export class PredictionListController extends Component {
     }
 
     try {
-      const prefab = await this.loadAsset<Prefab>(
-        PredictionListController.MATCH_ITEM_PREFAB_UUID,
-      );
+      const prefab = await this.loadMatchItemPrefab();
 
       for (let i = 0; i < PredictionListController.EXAMPLES.length; i += 1) {
         const example = PredictionListController.EXAMPLES[i];
@@ -182,6 +192,7 @@ export class PredictionListController extends Component {
         this.setLabel(card, "AwayTeamInfo/Name", example.awayTeam);
         await this.trySetFlag(card, "HomeTeamInfo/Flag", example.homeFlagCode);
         await this.trySetFlag(card, "AwayTeamInfo/Flag", example.awayFlagCode);
+        this.bindActionButton(card, example);
       }
 
       const layout = exampleList.getComponent(Layout);
@@ -278,15 +289,15 @@ export class PredictionListController extends Component {
     return matchItemList;
   }
 
-  private loadAsset<T>(uuid: string): Promise<T> {
+  private loadMatchItemPrefab(): Promise<Prefab> {
     return new Promise((resolve, reject) => {
-      assetManager.loadAny(uuid, (err, asset) => {
-        if (err) {
+      resources.load("prefabs/MatchListItem", Prefab, (err, asset) => {
+        if (err || !asset) {
           reject(err);
           return;
         }
 
-        resolve(asset as T);
+        resolve(asset);
       });
     });
   }
@@ -327,6 +338,37 @@ export class PredictionListController extends Component {
         error,
       );
     }
+  }
+
+  private bindActionButton(card: Node, example: MatchExample): void {
+    const actionButton = this.getNodeByPath(card, "ActionButton");
+    if (!actionButton) {
+      console.warn("[PredictionListController] ActionButton not found");
+      return;
+    }
+
+    const button = actionButton.getComponent(Button);
+    if (button) {
+      button.interactable = true;
+    }
+
+    actionButton.off(Node.EventType.TOUCH_END);
+    actionButton.on(Node.EventType.TOUCH_END, () => {
+      setSelectedMatchInfo({
+        matchId: example.matchId,
+        homeCountryId: example.homeFlagCode,
+        awayCountryId: example.awayFlagCode,
+      });
+
+      director.loadScene("DeckSelection", (err) => {
+        if (err) {
+          console.error(
+            "[PredictionListController] Failed to load scene: DeckSelection",
+            err,
+          );
+        }
+      });
+    });
   }
 
   private configureTeamInfoLayout(card: Node): void {
