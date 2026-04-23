@@ -1,8 +1,10 @@
 import {
   _decorator,
+  Button,
   Color,
   Component,
   director,
+  EventHandler,
   instantiate,
   Label,
   Layout,
@@ -14,13 +16,16 @@ import {
   Widget,
 } from "cc";
 import { getCardDefinition } from "./CardCatalog";
-import { GameCard } from "./GameCard";
 import { clearSelectedCardId, getSelectedCardId } from "./CardSelectionState";
+import { discardViewedCard, selectViewedCard } from "./DeckSelectionState";
+import { GameCard } from "./GameCard";
 
 const { ccclass } = _decorator;
 
 @ccclass("CardSelectionController")
 export class CardSelectionController extends Component {
+  private currentCardId: number | null = null;
+
   onLoad(): void {
     void this.render();
   }
@@ -31,25 +36,33 @@ export class CardSelectionController extends Component {
       return;
     }
 
-    const cardId = getSelectedCardId() ?? 200;
-    const card = getCardDefinition(cardId);
-    if (!card) {
+    const cardId = getSelectedCardId();
+    if (cardId === null) {
+      director.loadScene("DeckSelection");
       return;
     }
+
+    const card = getCardDefinition(cardId);
+    if (!card) {
+      director.loadScene("DeckSelection");
+      return;
+    }
+    this.currentCardId = cardId;
 
     const content = this.ensureContentRoot(canvas);
     content.removeAllChildren();
 
-    this.createBackButton(content);
     await this.createCard(content, card.id);
-    this.createTextBlock(content, "Title", card.title, 56, true);
-    this.createTextBlock(content, "Content", card.content, 36, false);
-    this.createTextBlock(content, "Effect", card.effect, 34, false);
+    this.createTextBlock(content, card.title, 56, true, 90);
+    this.createTextBlock(content, card.content, 36, false, 120);
+    this.createTextBlock(content, card.effect, 34, false, 110);
+    this.bindButtons(canvas, card.id);
   }
 
   private ensureContentRoot(canvas: Node): Node {
     let root = canvas.getChildByName("CardSelectionContent");
     if (root) {
+      this.placeContentAboveBackground(canvas, root);
       return root;
     }
 
@@ -74,33 +87,84 @@ export class CardSelectionController extends Component {
     layout.type = Layout.Type.VERTICAL;
     layout.resizeMode = Layout.ResizeMode.CONTAINER;
     layout.verticalDirection = Layout.VerticalDirection.TOP_TO_BOTTOM;
-    layout.spacingY = 30;
-    layout.paddingTop = 180;
+    layout.spacingY = 24;
+    layout.paddingTop = 220;
     layout.paddingLeft = 56;
     layout.paddingRight = 56;
-    layout.paddingBottom = 80;
+    layout.paddingBottom = 320;
+
+    this.placeContentAboveBackground(canvas, root);
 
     return root;
   }
 
-  private createBackButton(parent: Node): void {
-    const buttonNode = new Node("BackLabel");
-    parent.addChild(buttonNode);
+  private bindButtons(canvas: Node, _cardId: number): void {
+    const returnButton = canvas.getChildByName("returnBtn");
+    this.bringButtonToFront(canvas, returnButton);
+    this.bindButtonClick(returnButton, "onReturnClick");
 
-    const transform = buttonNode.addComponent(UITransform);
-    transform.setContentSize(200, 48);
+    const selectButton = canvas.getChildByName("selectBtn");
+    this.bringButtonToFront(canvas, selectButton);
+    this.bindButtonClick(selectButton, "onSelectClick");
 
-    const label = buttonNode.addComponent(Label);
-    label.string = "< 返回";
-    label.fontSize = 34;
-    label.lineHeight = 40;
-    label.color = new Color(255, 255, 255, 255);
-    label.isBold = true;
+    const discardButton = canvas.getChildByName("discardBtn");
+    this.bringButtonToFront(canvas, discardButton);
+    this.bindButtonClick(discardButton, "onDiscardClick");
+  }
 
-    buttonNode.on(Node.EventType.TOUCH_END, () => {
-      clearSelectedCardId();
-      director.loadScene("DeckSelection");
-    });
+  private bringButtonToFront(canvas: Node, button: Node | null): void {
+    if (!button) {
+      return;
+    }
+
+    button.setSiblingIndex(canvas.children.length - 1);
+  }
+
+  private placeContentAboveBackground(canvas: Node, content: Node): void {
+    const background = canvas.getChildByName("BG");
+    if (!background) {
+      return;
+    }
+
+    content.setSiblingIndex(background.getSiblingIndex() + 1);
+  }
+
+  private bindButtonClick(buttonNode: Node | null, handler: string): void {
+    const button = buttonNode?.getComponent(Button);
+    if (!button) {
+      return;
+    }
+
+    const clickEvent = new EventHandler();
+    clickEvent.target = this.node;
+    clickEvent.component = "CardSelectionController";
+    clickEvent.handler = handler;
+    button.clickEvents = [clickEvent];
+  }
+
+  public onReturnClick(): void {
+    clearSelectedCardId();
+    director.loadScene("DeckSelection");
+  }
+
+  public onSelectClick(): void {
+    if (this.currentCardId === null) {
+      return;
+    }
+
+    selectViewedCard(this.currentCardId);
+    clearSelectedCardId();
+    director.loadScene("DeckSelection");
+  }
+
+  public onDiscardClick(): void {
+    if (this.currentCardId === null) {
+      return;
+    }
+
+    discardViewedCard(this.currentCardId);
+    clearSelectedCardId();
+    director.loadScene("DeckSelection");
   }
 
   private async createCard(parent: Node, cardId: number): Promise<void> {
@@ -108,7 +172,7 @@ export class CardSelectionController extends Component {
     parent.addChild(holder);
 
     const transform = holder.addComponent(UITransform);
-    transform.setContentSize(750, 760);
+    transform.setContentSize(638, 760);
 
     const prefab = await this.loadPrefab();
     const cardNode = instantiate(prefab);
@@ -116,26 +180,28 @@ export class CardSelectionController extends Component {
     cardNode.setPosition(new Vec3(0, 0, 0));
 
     const gameCard = cardNode.getComponent(GameCard);
-    if (gameCard) {
-      gameCard.setOpenSceneOnFace(false);
-      gameCard.setCardSize(460, 690);
-      await gameCard.configure(cardId);
-      await gameCard.showFaceInstant();
+    if (!gameCard) {
+      return;
     }
+
+    gameCard.setOpenSceneOnFace(false);
+    gameCard.setSideChangeHandler(null);
+    gameCard.setCardSize(460, 690);
+    await gameCard.configure(cardId, "face");
   }
 
   private createTextBlock(
     parent: Node,
-    name: string,
     text: string,
     fontSize: number,
     bold: boolean,
+    height: number,
   ): void {
-    const node = new Node(name);
+    const node = new Node("TextBlock");
     parent.addChild(node);
 
     const transform = node.addComponent(UITransform);
-    transform.setContentSize(638, bold ? 72 : 120);
+    transform.setContentSize(638, height);
 
     const label = node.addComponent(Label);
     label.string = text;
@@ -144,6 +210,7 @@ export class CardSelectionController extends Component {
     label.color = new Color(255, 255, 255, 255);
     label.isBold = bold;
     label.enableWrapText = true;
+    label.horizontalAlign = Label.HorizontalAlign.CENTER;
   }
 
   private loadPrefab(): Promise<Prefab> {

@@ -1,21 +1,39 @@
 import {
   _decorator,
-  Color,
+  Button,
   Component,
+  Sprite,
+  director,
   instantiate,
   Label,
+  Mask,
   Node,
   Prefab,
   resources,
   UITransform,
   Vec3,
-  Widget,
 } from "cc";
-import { getAllCardDefinitions } from "./CardCatalog";
+import { showDialog } from "./DialogUtils";
 import { GameCard } from "./GameCard";
+import {
+  clearDeckSelectionState,
+  consumeDeckCompleteNotice,
+  ensureDeckSelectionState,
+  getDeckSlots,
+  getDiscardedCardIds,
+  getDrawPileCount,
+  getRedrawRemaining,
+  getSelectedCardIds,
+  getSelectedLimit,
+  redealCards,
+  setSlotSide,
+} from "./DeckSelectionState";
 import { getSelectedMatchInfo } from "./MatchSelectionState";
 
 const { ccclass } = _decorator;
+
+const GRID_COLUMNS = 3;
+const CARD_ASPECT_RATIO = 150 / 223;
 
 @ccclass("DeckSelectionController")
 export class DeckSelectionController extends Component {
@@ -29,146 +47,193 @@ export class DeckSelectionController extends Component {
       return;
     }
 
-    this.renderTitle(canvas);
+    ensureDeckSelectionState(getSelectedMatchInfo());
+    this.hideTitle(canvas);
+    this.bindReturnButton(canvas);
+    this.bindAgainButton(canvas);
+    this.renderPileNumbers(canvas);
 
-    const grid = this.ensureCardGrid(canvas);
+    const grid = canvas.getChildByName("CardGrid");
+    if (!grid) {
+      console.error(
+        "[DeckSelectionController] CardGrid node was not found in DeckSelection.scene",
+      );
+      return;
+    }
+
+    this.configureGrid(grid);
     grid.removeAllChildren();
 
-    const prefab = await this.loadPrefab();
-    const cards = getAllCardDefinitions().slice(0, 6);
-    const cardWidth = 176;
-    const cardHeight = 262;
-    const spacingX = 10;
-    const spacingY = 14;
-    const columns = 3;
+    const { cardWidth, cardHeight, spacing } = this.computeCardMetrics(grid);
+    const prefab = await this.loadPrefab("prefabs/GameCard");
+    const slots = getDeckSlots();
 
-    for (let index = 0; index < cards.length; index += 1) {
-      const card = cards[index];
-      const cardNode = instantiate(prefab);
-      grid.addChild(cardNode);
-
-      const gameCard = cardNode.getComponent(GameCard);
-      if (gameCard) {
-        gameCard.setCardSize(cardWidth, cardHeight);
-        await gameCard.configure(card.id);
+    for (let index = 0; index < slots.length; index += 1) {
+      const slot = slots[index];
+      if (typeof slot.cardId !== "number") {
+        continue;
       }
 
-      this.positionCard(cardNode, index, {
-        cardWidth,
-        cardHeight,
-        spacingX,
-        spacingY,
-        columns,
+      const cardId = slot.cardId;
+      const cardNode = instantiate(prefab);
+      grid.addChild(cardNode);
+      this.positionCardNode(grid, cardNode, index, cardWidth, cardHeight, spacing);
+
+      const gameCard = cardNode.getComponent(GameCard);
+      if (!gameCard) {
+        continue;
+      }
+
+      gameCard.setCardSize(cardWidth, cardHeight);
+      gameCard.setOpenSceneOnFace(true);
+      gameCard.setSideChangeHandler((side) => {
+        setSlotSide(cardId, side);
+      });
+      await gameCard.configure(cardId, slot.side);
+    }
+
+    if (consumeDeckCompleteNotice()) {
+      await showDialog(canvas, {
+        message: "已选完卡组",
+        confirmLabel: "确定",
       });
     }
   }
 
-  private renderTitle(canvas: Node): void {
-    let titleNode = canvas.getChildByName("DeckSelectionTitle");
-    if (!titleNode) {
-      titleNode = new Node("DeckSelectionTitle");
-      canvas.addChild(titleNode);
-
-      const transform = titleNode.addComponent(UITransform);
-      transform.setContentSize(670, 120);
-
-      const widget = titleNode.addComponent(Widget);
-      widget.isAlignTop = true;
-      widget.isAlignLeft = true;
-      widget.isAlignRight = true;
-      widget.top = 150;
-      widget.left = 40;
-      widget.right = 40;
-      widget.alignMode = 2;
-
-      const label = titleNode.addComponent(Label);
-      label.fontSize = 40;
-      label.lineHeight = 48;
-      label.isBold = true;
-      label.color = new Color(255, 255, 255, 255);
-      label.horizontalAlign = Label.HorizontalAlign.CENTER;
-      label.enableWrapText = true;
+  private hideTitle(canvas: Node): void {
+    const titleNode = canvas.getChildByName("DeckSelectionTitle");
+    if (titleNode) {
+      titleNode.active = false;
     }
+  }
 
-    const label = titleNode.getComponent(Label);
-    if (!label) {
+  private bindReturnButton(canvas: Node): void {
+    const returnButton = canvas.getChildByName("returnBtn");
+    if (!returnButton) {
       return;
     }
 
-    const matchInfo = getSelectedMatchInfo();
-    if (matchInfo) {
-      label.string = `抽到的卡牌\n${matchInfo.matchId}  ${matchInfo.homeCountryId} vs ${matchInfo.awayCountryId}`;
+    returnButton.off(Node.EventType.TOUCH_END);
+    returnButton.on(Node.EventType.TOUCH_END, () => {
+      void showDialog(canvas, {
+        message: "现在退出不会保存你已构建的卡组",
+        confirmLabel: "确认",
+        discardLabel: "取消",
+        onConfirm: () => {
+          clearDeckSelectionState();
+          director.loadScene("PredictionList");
+        },
+      });
+    });
+  }
+
+  private renderPileNumbers(canvas: Node): void {
+    this.setLabelText(canvas, "DrawPile/Number", `${getDrawPileCount()}`);
+    this.setLabelText(
+      canvas,
+      "SelectedPile/Number",
+      `${getSelectedCardIds().length}/${getSelectedLimit()}`,
+    );
+    this.setLabelText(canvas, "DiscardPile/Number", `${getDiscardedCardIds().length}`);
+    this.setLabelText(canvas, "againBtn/Number", `${getRedrawRemaining()}`);
+
+    const againButton = canvas.getChildByName("againBtn");
+    const button = againButton?.getComponent(Button);
+    const sprite = againButton?.getComponent(Sprite);
+    const isEnabled = getRedrawRemaining() > 0;
+    if (button) {
+      button.interactable = isEnabled;
+    }
+    if (sprite) {
+      sprite.grayscale = !isEnabled;
+    }
+  }
+
+  private setLabelText(canvas: Node, path: string, text: string): void {
+    const node = this.getNodeByPath(canvas, path);
+    const label = node?.getComponent(Label);
+    if (label) {
+      label.string = text;
+    }
+  }
+
+  private configureGrid(grid: Node): void {
+    let mask = grid.getComponent(Mask);
+    if (!mask) {
+      mask = grid.addComponent(Mask);
+    }
+    mask.type = Mask.Type.RECT;
+  }
+
+  private bindAgainButton(canvas: Node): void {
+    const againButton = canvas.getChildByName("againBtn");
+    if (!againButton) {
       return;
     }
 
-    label.string = "抽到的卡牌";
+    againButton.off(Node.EventType.TOUCH_END);
+    againButton.on(Node.EventType.TOUCH_END, () => {
+      if (!redealCards()) {
+        return;
+      }
+
+      void this.render();
+    });
   }
 
-  private ensureCardGrid(canvas: Node): Node {
-    let grid = canvas.getChildByName("CardGrid");
-    if (!grid) {
-      grid = new Node("CardGrid");
-      canvas.addChild(grid);
-
-      const transform = grid.addComponent(UITransform);
-      transform.setContentSize(548, 1124);
-
-      const widget = grid.addComponent(Widget);
-      widget.isAlignHorizontalCenter = true;
-      widget.isAlignTop = true;
-      widget.isAlignBottom = true;
-      widget.horizontalCenter = 0;
-      widget.top = 300;
-      widget.bottom = 200;
-      widget.alignMode = 2;
-    }
-
-    const transform = grid.getComponent(UITransform);
-    transform?.setContentSize(548, 1124);
-
-    const widget = grid.getComponent(Widget);
-    if (widget) {
-      widget.isAlignLeft = false;
-      widget.isAlignRight = false;
-      widget.isAlignHorizontalCenter = true;
-      widget.horizontalCenter = 0;
-      widget.isAlignTop = true;
-      widget.isAlignBottom = true;
-      widget.top = 300;
-      widget.bottom = 200;
-      widget.alignMode = 2;
-      widget.updateAlignment();
-    }
-
-    return grid;
+  private computeCardMetrics(
+    grid: Node,
+  ): { cardWidth: number; cardHeight: number; spacing: number } {
+    const gridWidth = grid.getComponent(UITransform)?.contentSize.width ?? 0;
+    const spacing = Math.max(1, Math.round(gridWidth / 26));
+    const cardWidth = Math.round(spacing * 8);
+    const cardHeight = Math.round(cardWidth / CARD_ASPECT_RATIO);
+    return { cardWidth, cardHeight, spacing };
   }
 
-  private positionCard(
+  private positionCardNode(
+    grid: Node,
     cardNode: Node,
-    index: number,
-    options: {
-      cardWidth: number;
-      cardHeight: number;
-      spacingX: number;
-      spacingY: number;
-      columns: number;
-    },
+    slotIndex: number,
+    cardWidth: number,
+    cardHeight: number,
+    spacing: number,
   ): void {
-    const { cardWidth, cardHeight, spacingX, spacingY, columns } = options;
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-    const totalWidth = columns * cardWidth + (columns - 1) * spacingX;
-    const x = -totalWidth / 2 + cardWidth / 2 + column * (cardWidth + spacingX);
-    const y = -cardHeight / 2 - row * (cardHeight + spacingY);
+    const gridTransform = grid.getComponent(UITransform);
+    const gridHeight = gridTransform?.contentSize.height ?? 0;
+    const rowCount = Math.ceil(getDeckSlots().length / GRID_COLUMNS);
+    const totalHeight = rowCount * cardHeight + Math.max(0, rowCount - 1) * spacing;
+    const startY = totalHeight / 2 - cardHeight / 2;
+    const row = Math.floor(slotIndex / GRID_COLUMNS);
+    const column = slotIndex % GRID_COLUMNS;
+    const rowWidth = GRID_COLUMNS * cardWidth + (GRID_COLUMNS - 1) * spacing;
+    const startX = -rowWidth / 2 + cardWidth / 2;
+    const x = startX + column * (cardWidth + spacing);
+    const y = startY - row * (cardHeight + spacing);
+    const verticalOffset = gridHeight / 2 - totalHeight / 2;
 
-    cardNode.setPosition(new Vec3(x, y, 0));
+    cardNode.setPosition(new Vec3(x, y + verticalOffset, 0));
   }
 
-  private loadPrefab(): Promise<Prefab> {
+  private getNodeByPath(root: Node, path: string): Node | null {
+    const segments = path.split("/");
+    let current: Node | null = root;
+
+    for (const segment of segments) {
+      current = current?.getChildByName(segment) ?? null;
+      if (!current) {
+        return null;
+      }
+    }
+
+    return current;
+  }
+
+  private loadPrefab(path: string): Promise<Prefab> {
     return new Promise((resolve, reject) => {
-      resources.load("prefabs/GameCard", Prefab, (err, asset) => {
+      resources.load(path, Prefab, (err, asset) => {
         if (err || !asset) {
-          reject(err ?? new Error("Failed to load GameCard prefab"));
+          reject(err ?? new Error(`Failed to load prefab at ${path}`));
           return;
         }
 

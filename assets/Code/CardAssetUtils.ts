@@ -26,7 +26,6 @@ export function setSpriteFrame(
     return;
   }
 
-  // Force untrimmed rendering so back/type/face keep the same visual size.
   (sprite as unknown as { trim?: boolean }).trim = false;
   sprite.spriteFrame = frame;
   sprite.sizeMode = Sprite.SizeMode.CUSTOM;
