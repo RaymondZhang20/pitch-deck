@@ -5,12 +5,16 @@ import {
   Component,
   director,
   EventTouch,
+  Graphics,
   instantiate,
   Label,
   Node,
   Prefab,
   resources,
   Sprite,
+  Tween,
+  tween,
+  UIOpacity,
   UITransform,
   Vec3,
   Widget,
@@ -32,6 +36,8 @@ const CARD_CENTER_Y = 120;
 const MAX_DRAG_X = 250;
 const MAX_FLAG_SCALE = 1.5;
 const MAX_CARD_ROTATION = 18;
+const MIN_CARD_SCALE = 0.85;
+const DRAG_COMMIT_THRESHOLD_RATIO = 0.4;
 
 @ccclass("CardSelectionController")
 export class CardSelectionController extends Component {
@@ -44,6 +50,10 @@ export class CardSelectionController extends Component {
   private effectNode: Node | null = null;
   private leftFlagNode: Node | null = null;
   private rightFlagNode: Node | null = null;
+  private leftHighlightNode: Node | null = null;
+  private rightHighlightNode: Node | null = null;
+  private instructionNode: Node | null = null;
+  private instructionTween: Tween<Node> | null = null;
   private assignmentMode = false;
   private dragStartPointerX = 0;
   private dragStartCardX = 0;
@@ -54,6 +64,7 @@ export class CardSelectionController extends Component {
 
   onDestroy(): void {
     this.detachDragEvents();
+    this.stopInstructionTween();
   }
 
   private async render(): Promise<void> {
@@ -82,6 +93,13 @@ export class CardSelectionController extends Component {
     this.contentRoot = content;
     this.leftFlagNode = null;
     this.rightFlagNode = null;
+    this.leftHighlightNode = null;
+    this.rightHighlightNode = null;
+    this.instructionNode =
+      content.getChildByName("CardAssignmentInstruction") ??
+      canvas.getChildByName("CardAssignmentInstruction");
+    this.stopInstructionTween();
+    this.hideAssignmentInstruction();
 
     await this.createCard(content, card.id);
     this.titleNode = this.createTextBlock(
@@ -219,6 +237,16 @@ export class CardSelectionController extends Component {
     holder.setPosition(0, CARD_CENTER_Y, 0);
     cardNode.setRotationFromEuler(0, 0, 0);
 
+    this.leftHighlightNode =
+      content.getChildByName("LeftHighlight") ??
+      canvas.getChildByName("LeftHighlight");
+    this.rightHighlightNode =
+      content.getChildByName("RightHighlight") ??
+      canvas.getChildByName("RightHighlight");
+    this.resetHighlightNode(this.leftHighlightNode);
+    this.resetHighlightNode(this.rightHighlightNode);
+    this.showAssignmentInstruction();
+
     const leftFlag = this.ensureFlagNode(content, "LeftFlag", -220, 610);
     const rightFlag = this.ensureFlagNode(content, "RightFlag", 220, 610);
     this.leftFlagNode = leftFlag;
@@ -260,6 +288,41 @@ export class CardSelectionController extends Component {
     flagNode.setScale(1, 1, 1);
     flagNode.setPosition(x, y, 0);
     return flagNode;
+  }
+
+  private resetHighlightNode(highlightNode: Node | null): void {
+    if (!highlightNode) {
+      return;
+    }
+
+    highlightNode.active = true;
+    let graphics = highlightNode.getComponent(Graphics);
+    if (!graphics) {
+      graphics = highlightNode.addComponent(Graphics);
+    }
+
+    const transform = highlightNode.getComponent(UITransform);
+    const width = transform?.contentSize.width ?? 0;
+    const height = transform?.contentSize.height ?? 0;
+    graphics.clear();
+    graphics.fillColor = new Color(255, 255, 255, 0);
+    graphics.rect(-width / 2, -height / 2, width, height);
+    graphics.fill();
+  }
+
+  private setHighlightAlpha(highlightNode: Node | null, alpha: number): void {
+    const graphics = highlightNode?.getComponent(Graphics);
+    const transform = highlightNode?.getComponent(UITransform);
+    if (!graphics || !transform) {
+      return;
+    }
+
+    const width = transform.contentSize.width;
+    const height = transform.contentSize.height;
+    graphics.clear();
+    graphics.fillColor = new Color(255, 255, 255, alpha);
+    graphics.rect(-width / 2, -height / 2, width, height);
+    graphics.fill();
   }
 
   private attachDragEvents(): void {
@@ -324,15 +387,71 @@ export class CardSelectionController extends Component {
       return;
     }
 
+    const threshold = MAX_DRAG_X * DRAG_COMMIT_THRESHOLD_RATIO;
+    if (Math.abs(this.cardHolder.position.x) < threshold) {
+      this.cardHolder.setPosition(0, CARD_CENTER_Y, 0);
+      this.updateAssignmentVisuals(0);
+      return;
+    }
+
     const chosenCountryCode =
       this.cardHolder.position.x < 0
         ? matchInfo.homeCountryId
         : matchInfo.awayCountryId;
 
     this.detachDragEvents();
+    this.hideAssignmentInstruction();
     selectViewedCard(this.currentCardId, chosenCountryCode);
     clearSelectedCardId();
     director.loadScene("DeckSelection");
+  }
+
+  private showAssignmentInstruction(): void {
+    const instructionNode = this.instructionNode;
+    if (!instructionNode) {
+      return;
+    }
+
+    this.stopInstructionTween();
+    instructionNode.active = true;
+    let opacity = instructionNode.getComponent(UIOpacity);
+    if (!opacity) {
+      opacity = instructionNode.addComponent(UIOpacity);
+    }
+    opacity.opacity = 255;
+
+    this.instructionTween = tween(opacity)
+      .repeat(
+        2,
+        tween<UIOpacity>().to(1, { opacity: 80 }).to(1, { opacity: 255 }),
+      )
+      .to(1, { opacity: 0 })
+      .call(() => {
+        this.hideAssignmentInstruction();
+      })
+      .start();
+  }
+
+  private hideAssignmentInstruction(): void {
+    if (!this.instructionNode) {
+      return;
+    }
+
+    this.stopInstructionTween();
+    this.instructionNode.active = false;
+    const opacity = this.instructionNode.getComponent(UIOpacity);
+    if (opacity) {
+      opacity.opacity = 255;
+    }
+  }
+
+  private stopInstructionTween(): void {
+    if (!this.instructionTween) {
+      return;
+    }
+
+    this.instructionTween.stop();
+    this.instructionTween = null;
   }
 
   private updateAssignmentVisuals(cardX: number): void {
@@ -343,8 +462,10 @@ export class CardSelectionController extends Component {
     }
 
     const progress = Math.min(Math.abs(cardX) / MAX_DRAG_X, 1);
-    const activeScale = 1 + Math.min(progress * 0.5, 0.5);
+    const activeScale =
+      1 + Math.min(progress * (MAX_FLAG_SCALE - 1), MAX_FLAG_SCALE - 1);
     const inactiveScale = 1;
+    const cardScale = 1 - (1 - MIN_CARD_SCALE) * progress;
 
     if (this.leftFlagNode) {
       const scale = cardX < 0 ? activeScale : inactiveScale;
@@ -355,6 +476,13 @@ export class CardSelectionController extends Component {
       const scale = cardX > 0 ? activeScale : inactiveScale;
       this.rightFlagNode.setScale(scale, scale, 1);
     }
+
+    if (this.cardNode) {
+      this.cardNode.setScale(cardScale, cardScale, 1);
+    }
+
+    this.setHighlightAlpha(this.leftHighlightNode, cardX < 0 ? 45 : 0);
+    this.setHighlightAlpha(this.rightHighlightNode, cardX > 0 ? 45 : 0);
   }
 
   private toLocalPoint(event: EventTouch): Vec3 {
