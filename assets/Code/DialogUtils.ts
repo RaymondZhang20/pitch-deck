@@ -9,6 +9,7 @@ import {
   Prefab,
   resources,
   UITransform,
+  Vec3,
   Widget,
 } from "cc";
 
@@ -69,6 +70,7 @@ export async function showDialog(
   } else if (discardButton) {
     discardButton.removeFromParent();
     discardButton.destroy();
+    centerNodeHorizontally(confirmButton);
   }
 
   return dialogNode;
@@ -178,6 +180,20 @@ function bindButton(node: Node | null, handler: () => void): void {
 
   node.off(Node.EventType.TOUCH_END);
   node.on(Node.EventType.TOUCH_END, handler);
+}
+
+function centerNodeHorizontally(node: Node | null): void {
+  if (!node) {
+    return;
+  }
+
+  const widget = node.getComponent(Widget);
+  if (widget) {
+    widget.enabled = false;
+  }
+
+  const currentPosition = node.position;
+  node.setPosition(new Vec3(0, currentPosition.y, currentPosition.z));
 }
 
 function findDialogTextLabel(root: Node): Label | null {

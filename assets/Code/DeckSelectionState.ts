@@ -8,12 +8,17 @@ export type DeckCardSlot = {
   side: CardSide;
 };
 
+export type SelectedCardRecord = {
+  cardId: number;
+  countryCode: string;
+};
+
 export type DeckSelectionState = {
   matchId: string;
   selectedLimit: number;
   drawPileIds: number[];
   slots: DeckCardSlot[];
-  selectedCardIds: number[];
+  selectedCards: SelectedCardRecord[];
   discardedCardIds: number[];
   redrawRemaining: number;
   pendingDeckCompleteNotice: boolean;
@@ -51,7 +56,7 @@ export function ensureDeckSelectionState(
     selectedLimit: DEFAULT_SELECTED_LIMIT,
     drawPileIds: shuffledIds,
     slots,
-    selectedCardIds: [],
+    selectedCards: [],
     discardedCardIds: [],
     redrawRemaining: DEFAULT_REDRAW_COUNT,
     pendingDeckCompleteNotice: false,
@@ -73,7 +78,11 @@ export function getDeckSlots(): readonly DeckCardSlot[] {
 }
 
 export function getSelectedCardIds(): readonly number[] {
-  return state?.selectedCardIds ?? [];
+  return state?.selectedCards.map((item) => item.cardId) ?? [];
+}
+
+export function getSelectedCards(): readonly SelectedCardRecord[] {
+  return state?.selectedCards ?? [];
 }
 
 export function getDiscardedCardIds(): readonly number[] {
@@ -110,18 +119,21 @@ export function setSlotSide(cardId: number, side: CardSide): void {
   }
 }
 
-export function selectViewedCard(cardId: number): boolean {
+export function selectViewedCard(
+  cardId: number,
+  countryCode = "",
+): boolean {
   if (!state) {
     return false;
   }
 
-  if (state.selectedCardIds.length >= state.selectedLimit) {
+  if (state.selectedCards.length >= state.selectedLimit) {
     state.pendingDeckCompleteNotice = true;
     return false;
   }
 
-  const didProcess = processViewedCard(cardId, "select");
-  if (didProcess && state.selectedCardIds.length >= state.selectedLimit) {
+  const didProcess = processViewedCard(cardId, "select", countryCode);
+  if (didProcess && state.selectedCards.length >= state.selectedLimit) {
     state.pendingDeckCompleteNotice = true;
   }
 
@@ -186,6 +198,7 @@ function refillDrawPileFromDiscardIfNeeded(): void {
 function processViewedCard(
   cardId: number,
   action: "select" | "discard",
+  countryCode = "",
 ): boolean {
   if (!state) {
     return false;
@@ -200,7 +213,10 @@ function processViewedCard(
   slot.side = "back";
 
   if (action === "select") {
-    state.selectedCardIds.push(cardId);
+    state.selectedCards.push({
+      cardId,
+      countryCode,
+    });
   } else {
     state.discardedCardIds.push(cardId);
   }
