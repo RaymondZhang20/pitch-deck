@@ -3,6 +3,7 @@ import {
   Button,
   Component,
   Sprite,
+  Widget,
   director,
   instantiate,
   Label,
@@ -13,6 +14,8 @@ import {
   UITransform,
   Vec3,
 } from "cc";
+import type { PulseMotionHandle } from "./ButtonMotionUtils";
+import { startPulseMotion, stopPulseMotion } from "./ButtonMotionUtils";
 import { showDialog } from "./DialogUtils";
 import { GameCard } from "./GameCard";
 import {
@@ -37,8 +40,14 @@ const CARD_ASPECT_RATIO = 150 / 223;
 
 @ccclass("DeckSelectionController")
 export class DeckSelectionController extends Component {
+  private againMotionHandle: PulseMotionHandle | null = null;
+
   onLoad(): void {
     void this.render();
+  }
+
+  onDestroy(): void {
+    this.stopAgainButtonMotion();
   }
 
   private async render(): Promise<void> {
@@ -62,6 +71,8 @@ export class DeckSelectionController extends Component {
     }
 
     this.configureGrid(grid);
+    canvas.getComponent(Widget)?.updateAlignment();
+    grid.getComponent(Widget)?.updateAlignment();
     grid.removeAllChildren();
 
     const { cardWidth, cardHeight, spacing } = this.computeCardMetrics(grid);
@@ -138,8 +149,9 @@ export class DeckSelectionController extends Component {
     this.setLabelText(canvas, "againBtn/Number", `${getRedrawRemaining()}`);
 
     const againButton = canvas.getChildByName("againBtn");
-    const button = againButton?.getComponent(Button);
-    const sprite = againButton?.getComponent(Sprite);
+    const againButtonBg = againButton?.getChildByName("BG");
+    const button = againButtonBg?.getComponent(Button);
+    const sprite = againButtonBg?.getComponent(Sprite);
     const isEnabled = getRedrawRemaining() > 0;
     if (button) {
       button.interactable = isEnabled;
@@ -147,6 +159,8 @@ export class DeckSelectionController extends Component {
     if (sprite) {
       sprite.grayscale = !isEnabled;
     }
+
+    this.updateAgainButtonMotion(againButton, isEnabled);
   }
 
   private setLabelText(canvas: Node, path: string, text: string): void {
@@ -167,18 +181,54 @@ export class DeckSelectionController extends Component {
 
   private bindAgainButton(canvas: Node): void {
     const againButton = canvas.getChildByName("againBtn");
-    if (!againButton) {
+    const againButtonBg = againButton?.getChildByName("BG");
+    if (!againButtonBg) {
       return;
     }
 
-    againButton.off(Node.EventType.TOUCH_END);
-    againButton.on(Node.EventType.TOUCH_END, () => {
+    const button = againButtonBg.getComponent(Button);
+    if (button) {
+      againButtonBg.off(Button.EventType.CLICK);
+      againButtonBg.on(Button.EventType.CLICK, () => {
+        if (!redealCards()) {
+          return;
+        }
+
+        void this.render();
+      });
+      return;
+    }
+
+    againButtonBg.off(Node.EventType.TOUCH_END);
+    againButtonBg.on(Node.EventType.TOUCH_END, () => {
       if (!redealCards()) {
         return;
       }
 
       void this.render();
     });
+  }
+
+  private updateAgainButtonMotion(
+    againButton: Node | null,
+    isEnabled: boolean,
+  ): void {
+    this.stopAgainButtonMotion();
+
+    if (!againButton) {
+      return;
+    }
+
+    const animatedNode = againButton.getChildByName("BG") ?? againButton;
+    if (!isEnabled) {
+      return;
+    }
+
+    this.againMotionHandle = startPulseMotion(animatedNode);
+  }
+
+  private stopAgainButtonMotion(): void {
+    this.againMotionHandle = stopPulseMotion(this.againMotionHandle);
   }
 
   private computeCardMetrics(

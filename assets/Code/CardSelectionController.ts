@@ -38,6 +38,10 @@ const MAX_FLAG_SCALE = 1.5;
 const MAX_CARD_ROTATION = 18;
 const MIN_CARD_SCALE = 0.85;
 const DRAG_COMMIT_THRESHOLD_RATIO = 0.4;
+const ASSIGN_ANIMATION_DOWN_DURATION = 0.28;
+const ASSIGN_ANIMATION_UP_DURATION = 0.42;
+const ASSIGN_ANIMATION_DOWN_DISTANCE = 130;
+const ASSIGN_ANIMATION_END_SCALE = 0.3;
 
 @ccclass("CardSelectionController")
 export class CardSelectionController extends Component {
@@ -55,6 +59,7 @@ export class CardSelectionController extends Component {
   private instructionNode: Node | null = null;
   private instructionTween: Tween<Node> | null = null;
   private assignmentMode = false;
+  private isAssignmentAnimating = false;
   private dragStartPointerX = 0;
   private dragStartCardX = 0;
 
@@ -372,8 +377,13 @@ export class CardSelectionController extends Component {
   }
 
   private onCardDragEnd(): void {
+    void this.finishCardDrag();
+  }
+
+  private async finishCardDrag(): Promise<void> {
     if (
       !this.assignmentMode ||
+      this.isAssignmentAnimating ||
       this.currentCardId === null ||
       !this.cardHolder
     ) {
@@ -398,9 +408,13 @@ export class CardSelectionController extends Component {
       this.cardHolder.position.x < 0
         ? matchInfo.homeCountryId
         : matchInfo.awayCountryId;
+    const targetFlagNode =
+      this.cardHolder.position.x < 0 ? this.leftFlagNode : this.rightFlagNode;
 
     this.detachDragEvents();
+    this.isAssignmentAnimating = true;
     this.hideAssignmentInstruction();
+    await this.playAssignmentAnimation(targetFlagNode);
     selectViewedCard(this.currentCardId, chosenCountryCode);
     clearSelectedCardId();
     director.loadScene("DeckSelection");
@@ -522,6 +536,82 @@ export class CardSelectionController extends Component {
     this.cardNode = cardNode;
   }
 
+  private async playAssignmentAnimation(
+    targetFlagNode: Node | null,
+  ): Promise<void> {
+    const holder = this.cardHolder;
+    const cardNode = this.cardNode;
+    if (!holder || !cardNode || !targetFlagNode) {
+      return;
+    }
+
+    const startPosition = holder.position.clone();
+    const downPosition = new Vec3(
+      startPosition.x,
+      startPosition.y - ASSIGN_ANIMATION_DOWN_DISTANCE,
+      startPosition.z,
+    );
+    const targetPosition = targetFlagNode.position.clone();
+    const startScale = cardNode.scale.x;
+    const downPhaseEndScale =
+      startScale - (startScale - ASSIGN_ANIMATION_END_SCALE) * 0.35;
+    const startRotationZ = cardNode.eulerAngles.z;
+    const downPhaseEndRotation = startRotationZ * 0.65;
+
+    await this.animateAssignmentSegment(
+      ASSIGN_ANIMATION_DOWN_DURATION,
+      (progress) => {
+        holder.setPosition(
+          interpolateVec3(startPosition, downPosition, easeSin(progress)),
+        );
+        const scale = interpolateCos(startScale, downPhaseEndScale, progress);
+        const rotation = startRotationZ * (1 - 0.35 * progress);
+        cardNode.setScale(scale, scale, 1);
+        cardNode.setRotationFromEuler(0, 0, rotation);
+      },
+    );
+
+    await this.animateAssignmentSegment(
+      ASSIGN_ANIMATION_UP_DURATION,
+      (progress) => {
+        holder.setPosition(
+          interpolateVec3(downPosition, targetPosition, easeSin(progress)),
+        );
+        const scale = interpolateCos(
+          downPhaseEndScale,
+          ASSIGN_ANIMATION_END_SCALE,
+          progress,
+        );
+        const rotation = downPhaseEndRotation * (1 - progress);
+        cardNode.setScale(scale, scale, 1);
+        cardNode.setRotationFromEuler(0, 0, rotation);
+      },
+    );
+  }
+
+  private animateAssignmentSegment(
+    duration: number,
+    onUpdate: (progress: number) => void,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      const state = { value: 0 };
+      tween(state)
+        .to(
+          duration,
+          { value: 1 },
+          {
+            onUpdate: (target) => {
+              onUpdate(target.value);
+            },
+          },
+        )
+        .call(() => {
+          resolve();
+        })
+        .start();
+    });
+  }
+
   private createTextBlock(
     parent: Node,
     text: string,
@@ -565,4 +655,20 @@ export class CardSelectionController extends Component {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function easeSin(progress: number): number {
+  return Math.sin((progress * Math.PI) / 2);
+}
+
+function interpolateCos(start: number, end: number, progress: number): number {
+  return end + (start - end) * Math.cos((progress * Math.PI) / 2);
+}
+
+function interpolateVec3(start: Vec3, end: Vec3, progress: number): Vec3 {
+  return new Vec3(
+    start.x + (end.x - start.x) * progress,
+    start.y + (end.y - start.y) * progress,
+    start.z + (end.z - start.z) * progress,
+  );
 }
