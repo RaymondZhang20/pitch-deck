@@ -88,7 +88,14 @@ export class DeckSelectionController extends Component {
       const cardId = slot.cardId;
       const cardNode = instantiate(prefab);
       grid.addChild(cardNode);
-      this.positionCardNode(grid, cardNode, index, cardWidth, cardHeight, spacing);
+      this.positionCardNode(
+        grid,
+        cardNode,
+        index,
+        cardWidth,
+        cardHeight,
+        spacing,
+      );
 
       const gameCard = cardNode.getComponent(GameCard);
       if (!gameCard) {
@@ -145,7 +152,11 @@ export class DeckSelectionController extends Component {
       "SelectedPile/Number",
       `${getSelectedCardIds().length}/${getSelectedLimit()}`,
     );
-    this.setLabelText(canvas, "DiscardPile/Number", `${getDiscardedCardIds().length}`);
+    this.setLabelText(
+      canvas,
+      "DiscardPile/Number",
+      `${getDiscardedCardIds().length}`,
+    );
     this.setLabelText(canvas, "againBtn/Number", `${getRedrawRemaining()}`);
 
     const againButton = canvas.getChildByName("againBtn");
@@ -231,13 +242,34 @@ export class DeckSelectionController extends Component {
     this.againMotionHandle = stopPulseMotion(this.againMotionHandle);
   }
 
-  private computeCardMetrics(
-    grid: Node,
-  ): { cardWidth: number; cardHeight: number; spacing: number } {
-    const gridWidth = grid.getComponent(UITransform)?.contentSize.width ?? 0;
-    const spacing = Math.max(1, Math.round(gridWidth / 26));
-    const cardWidth = Math.round(spacing * 8);
-    const cardHeight = Math.round(cardWidth / CARD_ASPECT_RATIO);
+  private computeCardMetrics(grid: Node): {
+    cardWidth: number;
+    cardHeight: number;
+    spacing: number;
+  } {
+    const gridTransform = grid.getComponent(UITransform);
+    const gridWidth = gridTransform?.contentSize.width ?? 0;
+    const gridHeight = gridTransform?.contentSize.height ?? 0;
+    const rowCount = Math.max(
+      1,
+      Math.ceil(getDeckSlots().length / GRID_COLUMNS),
+    );
+
+    let spacing = Math.max(1, Math.round(gridWidth / 26));
+    let cardWidth = Math.round(spacing * 8);
+    let cardHeight = Math.round(cardWidth / CARD_ASPECT_RATIO);
+
+    const totalHeight =
+      rowCount * cardHeight + Math.max(0, rowCount - 1) * spacing;
+
+    if (totalHeight > gridHeight && gridHeight > 0) {
+      const heightSpacing =
+        gridHeight / (rowCount * (8 / CARD_ASPECT_RATIO) + (rowCount - 1));
+      spacing = Math.max(1, Math.floor(heightSpacing));
+      cardWidth = Math.round(spacing * 8);
+      cardHeight = Math.round(cardWidth / CARD_ASPECT_RATIO);
+    }
+
     return { cardWidth, cardHeight, spacing };
   }
 
@@ -252,7 +284,8 @@ export class DeckSelectionController extends Component {
     const gridTransform = grid.getComponent(UITransform);
     const gridHeight = gridTransform?.contentSize.height ?? 0;
     const rowCount = Math.ceil(getDeckSlots().length / GRID_COLUMNS);
-    const totalHeight = rowCount * cardHeight + Math.max(0, rowCount - 1) * spacing;
+    const totalHeight =
+      rowCount * cardHeight + Math.max(0, rowCount - 1) * spacing;
     const startY = totalHeight / 2 - cardHeight / 2;
     const row = Math.floor(slotIndex / GRID_COLUMNS);
     const column = slotIndex % GRID_COLUMNS;
