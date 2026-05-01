@@ -39,6 +39,21 @@ export async function showDialog(
   const messageLabel = findDialogTextLabel(dialogNode);
   if (messageLabel) {
     messageLabel.string = options.message;
+    messageLabel.enableWrapText = true;
+    messageLabel.overflow = Label.Overflow.RESIZE_HEIGHT;
+    messageLabel.horizontalAlign = Label.HorizontalAlign.CENTER;
+    messageLabel.lineHeight = messageLabel.fontSize + 5;
+    const currentPosition = messageLabel.node.position;
+    messageLabel.node.setPosition(
+      currentPosition.x,
+      currentPosition.y - 20,
+      currentPosition.z,
+    );
+    const labelTransform = messageLabel.getComponent(UITransform);
+    if (labelTransform) {
+      const currentSize = labelTransform.contentSize;
+      labelTransform.setContentSize(currentSize.width * 3, currentSize.height);
+    }
   }
 
   const confirmButton = findNodeByName(dialogNode, "confirmBtn");

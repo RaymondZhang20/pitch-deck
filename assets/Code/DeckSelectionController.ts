@@ -18,6 +18,8 @@ import type { PulseMotionHandle } from "./ButtonMotionUtils";
 import { startPulseMotion, stopPulseMotion } from "./ButtonMotionUtils";
 import { showDialog } from "./DialogUtils";
 import { GameCard } from "./GameCard";
+import { withLoadingOverlay } from "./LoadingOverlay";
+import { fetchMatchById, MatchStatusKey } from "./MatchApi";
 import {
   clearDeckSelectionState,
   consumeDeckCompleteNotice,
@@ -29,6 +31,7 @@ import {
   getSelectedCardIds,
   getSelectedLimit,
   redealCards,
+  setSavedDeckSubmissionMeta,
   setSlotSide,
 } from "./DeckSelectionState";
 import { getSelectedMatchInfo } from "./MatchSelectionState";
@@ -43,7 +46,7 @@ export class DeckSelectionController extends Component {
   private againMotionHandle: PulseMotionHandle | null = null;
 
   onLoad(): void {
-    void this.render();
+    void this.renderWithLoading();
   }
 
   onDestroy(): void {
@@ -111,11 +114,24 @@ export class DeckSelectionController extends Component {
     }
 
     if (consumeDeckCompleteNotice()) {
+      const deckCompleteDialog = await this.buildDeckCompleteDialog();
       await showDialog(canvas, {
-        message: "已选完卡组",
+        message: deckCompleteDialog.message,
         confirmLabel: "确定",
+        onConfirm: () => {
+          director.loadScene(deckCompleteDialog.targetScene);
+        },
       });
     }
+  }
+
+  private async renderWithLoading(): Promise<void> {
+    const canvas = this.node.parent;
+    if (!canvas) {
+      return;
+    }
+
+    await withLoadingOverlay(canvas, () => this.render());
   }
 
   private hideTitle(canvas: Node): void {
@@ -139,7 +155,9 @@ export class DeckSelectionController extends Component {
         discardLabel: "取消",
         onConfirm: () => {
           clearDeckSelectionState();
-          director.loadScene("PredictionList");
+          director.loadScene(
+            getSelectedMatchInfo()?.entryScene ?? "PredictionList",
+          );
         },
       });
     });
@@ -205,7 +223,7 @@ export class DeckSelectionController extends Component {
           return;
         }
 
-        void this.render();
+        void this.renderWithLoading();
       });
       return;
     }
@@ -216,7 +234,7 @@ export class DeckSelectionController extends Component {
         return;
       }
 
-      void this.render();
+      void this.renderWithLoading();
     });
   }
 
@@ -323,5 +341,76 @@ export class DeckSelectionController extends Component {
         resolve(asset);
       });
     });
+  }
+
+  private async buildDeckCompleteDialog(): Promise<{
+    message: string;
+    targetScene: "DeckView" | "ResultView";
+  }> {
+    const matchId = getSelectedMatchInfo()?.matchId;
+    if (!matchId) {
+      return {
+        message: "卡组构建完毕，点击查看你的分数",
+        targetScene: "ResultView",
+      };
+    }
+
+    try {
+      const match = await fetchMatchById(matchId);
+      const dialogInfo = this.getDeckCompleteDialogInfo(match.statusKey);
+      setSavedDeckSubmissionMeta(
+        matchId,
+        match.statusKey,
+        dialogInfo.type,
+        dialogInfo.buff,
+      );
+      return {
+        message: dialogInfo.message,
+        targetScene: dialogInfo.targetScene,
+      };
+    } catch (error) {
+      console.error(
+        "[DeckSelectionController] Failed to fetch match info for completion dialog",
+        error,
+      );
+      return {
+        message: "卡组构建完毕，点击查看你的分数",
+        targetScene: "ResultView",
+      };
+    }
+  }
+
+  private getDeckCompleteDialogInfo(matchStatusKey: MatchStatusKey): {
+    message: string;
+    type: "prediction" | "spoiler";
+    buff: string[];
+    targetScene: "DeckView" | "ResultView";
+  } {
+    if (matchStatusKey === "not-started") {
+      return {
+        message: "卡组构建完毕，比赛结果还未出炉，点击查看你已构建的卡组",
+        type: "prediction",
+        buff: [],
+        targetScene: "DeckView",
+      };
+    }
+
+    if (matchStatusKey === "in-progress") {
+      return {
+        message:
+          "卡组构建完毕，但是太迟啦，比赛已经在进行中，你的分数将不会计入预测分数中，而是开卷分数中。鉴于比赛结果还未出炉，你的正确预测将附上1.5倍的buff。点击查看你已构建的卡组",
+        type: "spoiler",
+        buff: ["01"],
+        targetScene: "DeckView",
+      };
+    }
+
+    return {
+      message:
+        "卡组构建完毕，但是太太太迟啦，比赛已经结束辣，你的分数将不会计入预测分数中，而是开卷分数中。点击查看你开卷考试的分数",
+      type: "spoiler",
+      buff: [],
+      targetScene: "ResultView",
+    };
   }
 }

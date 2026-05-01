@@ -11,6 +11,7 @@ import {
   Node,
   Prefab,
   resources,
+  ScrollBar,
   ScrollView,
   Size,
   Sprite,
@@ -18,137 +19,59 @@ import {
   Vec3,
   Widget,
 } from "cc";
+import { fetchMatchList, MatchInfo, MatchStatusKey } from "./MatchApi";
 import { setFlagByCode } from "./FlagUtils";
+import { withLoadingOverlay } from "./LoadingOverlay";
 import { setSelectedMatchInfo } from "./MatchSelectionState";
+import { SegmentedControl } from "./SegmentedControl";
 
 const { ccclass, property } = _decorator;
+const MATCH_ITEM_SPACING_Y = 50;
+const MATCH_ITEM_CONTENT_NAME = "MatchItemContent";
 
-type MatchExample = {
-  matchId: string;
-  time: string;
-  status: string;
-  homeTeam: string;
-  awayTeam: string;
-  homeFlagCode: string;
-  awayFlagCode: string;
-};
+const STATUS_TABS: Array<{ key: MatchStatusKey; label: string }> = [
+  { key: "not-started", label: "未开始" },
+  { key: "in-progress", label: "进行中" },
+  { key: "finished", label: "已结束" },
+];
 
 @ccclass("PredictionListController")
 export class PredictionListController extends Component {
-  private static readonly EXAMPLES: MatchExample[] = [
-    {
-      matchId: "match-001",
-      time: "06/18 20:00",
-      status: "未开始",
-      homeTeam: "日本",
-      awayTeam: "韩国",
-      homeFlagCode: "jp",
-      awayFlagCode: "kr",
-    },
-    {
-      matchId: "match-002",
-      time: "06/19 19:30",
-      status: "未开始",
-      homeTeam: "美国",
-      awayTeam: "墨西哥",
-      homeFlagCode: "us",
-      awayFlagCode: "mx",
-    },
-    {
-      matchId: "match-003",
-      time: "06/20 18:00",
-      status: "未开始",
-      homeTeam: "英格兰",
-      awayTeam: "葡萄牙",
-      homeFlagCode: "gb-eng",
-      awayFlagCode: "pt",
-    },
-    {
-      matchId: "match-004",
-      time: "06/21 21:15",
-      status: "未开始",
-      homeTeam: "巴西",
-      awayTeam: "阿根廷",
-      homeFlagCode: "br",
-      awayFlagCode: "ar",
-    },
-    {
-      matchId: "match-005",
-      time: "06/22 17:45",
-      status: "未开始",
-      homeTeam: "西班牙",
-      awayTeam: "法国",
-      homeFlagCode: "es",
-      awayFlagCode: "fr",
-    },
-    {
-      matchId: "match-006",
-      time: "06/23 19:00",
-      status: "未开始",
-      homeTeam: "荷兰",
-      awayTeam: "德国",
-      homeFlagCode: "nl",
-      awayFlagCode: "de",
-    },
-    {
-      matchId: "match-007",
-      time: "06/24 20:30",
-      status: "未开始",
-      homeTeam: "韩国",
-      awayTeam: "澳大利亚",
-      homeFlagCode: "kr",
-      awayFlagCode: "au",
-    },
-    {
-      matchId: "match-008",
-      time: "06/25 18:30",
-      status: "未开始",
-      homeTeam: "摩洛哥",
-      awayTeam: "尼日利亚",
-      homeFlagCode: "ma",
-      awayFlagCode: "ng",
-    },
-    {
-      matchId: "match-009",
-      time: "06/26 22:00",
-      status: "未开始",
-      homeTeam: "克罗地亚",
-      awayTeam: "瑞士",
-      homeFlagCode: "hr",
-      awayFlagCode: "ch",
-    },
-    {
-      matchId: "match-010",
-      time: "06/27 16:00",
-      status: "未开始",
-      homeTeam: "墨西哥",
-      awayTeam: "加拿大",
-      homeFlagCode: "mx",
-      awayFlagCode: "ca",
-    },
-    {
-      matchId: "match-011",
-      time: "06/28 20:45",
-      status: "未开始",
-      homeTeam: "卡塔尔",
-      awayTeam: "伊朗",
-      homeFlagCode: "qa",
-      awayFlagCode: "ir",
-    },
-  ];
-
   @property(Node)
   public returnBtn: Node | null = null;
 
+  private selectedStatus: MatchStatusKey = "not-started";
+  private matchPrefab: Prefab | null = null;
+  private segmentedControlNode: Node | null = null;
+  private segmentedControl: SegmentedControl | null = null;
+  private emptyLabelNode: Node | null = null;
+  private errorLabelNode: Node | null = null;
+  private matches: MatchInfo[] = [];
+  private matchApiFailed = false;
+
   onLoad(): void {
     this.bindEvents();
-    void this.setupExamples();
+    const canvas = this.node.parent;
+    if (!canvas) {
+      return;
+    }
+
+    void withLoadingOverlay(canvas, () => this.setupPage());
   }
 
   onDestroy(): void {
     if (this.returnBtn && isValid(this.returnBtn)) {
       this.returnBtn.off(Node.EventType.TOUCH_END, this.onClickReturnBtn, this);
     }
+    if (this.errorLabelNode && isValid(this.errorLabelNode)) {
+      this.errorLabelNode.off(
+        Node.EventType.TOUCH_END,
+        this.reloadCurrentScene,
+        this,
+      );
+    }
+
+    this.unbindSegmentedControl();
   }
 
   private bindEvents(): void {
@@ -168,138 +91,392 @@ export class PredictionListController extends Component {
     });
   }
 
-  private async setupExamples(): Promise<void> {
-    const exampleList = this.ensureMatchItemList();
-    if (!exampleList || exampleList.children.length > 0) {
+  private async setupPage(): Promise<void> {
+    try {
+      this.matchPrefab = await this.loadMatchItemPrefab();
+      this.matches = await this.loadMatchesFromApi();
+      await this.setupSegmentedControl();
+      await this.renderFilteredMatches();
+    } catch (error) {
+      console.error("[PredictionListController] Failed to setup page", error);
+    }
+  }
+
+  private async setupSegmentedControl(): Promise<void> {
+    const canvas = this.node.parent;
+    const filterBar = canvas?.getChildByName("filterBar");
+    if (!filterBar) {
+      console.warn("[PredictionListController] filterBar node was not found");
       return;
     }
 
-    try {
-      const prefab = await this.loadMatchItemPrefab();
+    const prefab = await this.loadSegmentedControlPrefab();
+    filterBar.removeAllChildren();
 
-      for (let i = 0; i < PredictionListController.EXAMPLES.length; i += 1) {
-        const example = PredictionListController.EXAMPLES[i];
-        const card = instantiate(prefab);
-        card.name = `ExampleMatchItem${i + 1}`;
-        exampleList.addChild(card);
-        card.setPosition(Vec3.ZERO);
-        this.configureTeamInfoLayout(card);
+    const segmentedControl = instantiate(prefab);
+    segmentedControl.name = "SegmentedControl";
+    filterBar.addChild(segmentedControl);
+    segmentedControl.setPosition(Vec3.ZERO);
+    filterBar.setSiblingIndex(filterBar.parent?.children.length ?? 0);
+    this.segmentedControlNode = segmentedControl;
+    this.segmentedControl =
+      segmentedControl.getComponent(SegmentedControl) ??
+      segmentedControl.addComponent(SegmentedControl);
 
-        this.setLabel(card, "TimeLabel", example.time);
-        this.setLabel(card, "StatusTag", example.status);
-        this.setLabel(card, "StatusLabel", example.status);
-        this.setLabel(card, "HomeTeamInfo/Name", example.homeTeam);
-        this.setLabel(card, "AwayTeamInfo/Name", example.awayTeam);
-        await this.trySetFlag(card, "HomeTeamInfo/Flag", example.homeFlagCode);
-        await this.trySetFlag(card, "AwayTeamInfo/Flag", example.awayFlagCode);
-        this.bindActionButton(card, example);
-      }
+    this.bindSegmentedControl(segmentedControl);
+    this.updateSegmentedControlState(false);
+  }
 
-      const layout = exampleList.getComponent(Layout);
-      layout?.updateLayout();
-
-      const scrollView = exampleList.parent?.getComponent(ScrollView);
-      if (scrollView) {
-        this.scheduleOnce(() => {
-          scrollView.scrollToTop(0);
-        }, 0);
-      }
-    } catch (error) {
-      console.error(
-        "[PredictionListController] Failed to create example items",
-        error,
-      );
+  private bindSegmentedControl(segmentedControl: Node): void {
+    const tabs = segmentedControl.getChildByName("Tabs");
+    if (!tabs) {
+      return;
     }
+
+    for (let index = 0; index < STATUS_TABS.length; index += 1) {
+      const tab = tabs.getChildByName(`Tab_${index}`);
+      if (!tab) {
+        continue;
+      }
+
+      const onTabClick = (): void => {
+        this.selectStatus(STATUS_TABS[index].key);
+      };
+
+      tab.off(Node.EventType.TOUCH_END);
+      tab.on(Node.EventType.TOUCH_END, onTabClick);
+
+      const button = tab.getComponent(Button);
+      if (button) {
+        tab.off(Button.EventType.CLICK);
+        tab.on(Button.EventType.CLICK, onTabClick);
+      }
+    }
+  }
+
+  private unbindSegmentedControl(): void {
+    const tabs = this.segmentedControlNode?.getChildByName("Tabs");
+    if (!tabs) {
+      return;
+    }
+
+    for (let index = 0; index < STATUS_TABS.length; index += 1) {
+      const tab = tabs.getChildByName(`Tab_${index}`);
+      tab?.off(Node.EventType.TOUCH_END);
+      tab?.off(Button.EventType.CLICK);
+    }
+  }
+
+  private selectStatus(status: MatchStatusKey): void {
+    if (this.selectedStatus === status) {
+      return;
+    }
+
+    this.selectedStatus = status;
+    this.updateSegmentedControlState(true);
+    void this.renderFilteredMatches();
+  }
+
+  private updateSegmentedControlState(animated = true): void {
+    const tabs = this.segmentedControlNode?.getChildByName("Tabs");
+    if (!tabs) {
+      return;
+    }
+
+    const selectedIndex = STATUS_TABS.findIndex(
+      (tab) => tab.key === this.selectedStatus,
+    );
+    this.segmentedControl?.setSelectedIndex(selectedIndex, animated);
+
+    for (let index = 0; index < STATUS_TABS.length; index += 1) {
+      const tab = tabs.getChildByName(`Tab_${index}`);
+      const label = tab?.getChildByName("Label")?.getComponent(Label);
+      if (label) {
+        label.string = STATUS_TABS[index].label;
+      }
+    }
+  }
+
+  private async renderFilteredMatches(): Promise<void> {
+    const matchItemContent = this.ensureMatchItemList();
+    if (!matchItemContent || !this.matchPrefab) {
+      return;
+    }
+
+    matchItemContent.removeAllChildren();
+
+    const matches = this.matches.filter(
+      (example) => example.statusKey === this.selectedStatus,
+    );
+
+    this.setErrorStateVisible(this.matchApiFailed);
+    this.setEmptyStateVisible(matches.length === 0);
+    if (this.matchApiFailed) {
+      this.resetMatchListScrollToTop(matchItemContent);
+      return;
+    }
+
+    const cards = matches.map((_, index) => {
+      const card = instantiate(this.matchPrefab as Prefab);
+      card.name = `ExampleMatchItem${index + 1}`;
+      return card;
+    });
+
+    this.updateMatchItemContentSize(matchItemContent, cards.length, cards[0] ?? null);
+    for (let i = 0; i < matches.length; i += 1) {
+      const example = matches[i];
+      const card = cards[i];
+      this.positionMatchCardBeforeLayout(matchItemContent, card, i);
+      matchItemContent.addChild(card);
+      this.configureTeamInfoLayout(card);
+
+      this.setLabel(card, "TimeLabel", example.time);
+      this.setLabel(card, "StatusTag", example.status);
+      this.setLabel(card, "StatusLabel", example.status);
+      this.setLabel(card, "HomeTeamInfo/Name", example.homeTeam);
+      this.setLabel(card, "AwayTeamInfo/Name", example.awayTeam);
+      this.setLabel(
+        card,
+        "ActionButton/Label",
+        example.statusKey === "finished" ? "开卷考试" : "参加预测",
+      );
+      await this.trySetFlag(card, "HomeTeamInfo/Flag", example.homeFlagCode);
+      await this.trySetFlag(card, "AwayTeamInfo/Flag", example.awayFlagCode);
+      this.bindActionButton(card, example);
+    }
+
+    this.resetMatchListScrollToTop(matchItemContent);
+  }
+
+  private setEmptyStateVisible(visible: boolean): void {
+    const canvas = this.node.parent;
+    if (!canvas) {
+      return;
+    }
+
+    if (!this.emptyLabelNode) {
+      this.emptyLabelNode = new Node("EmptyMatchTip");
+      canvas.addChild(this.emptyLabelNode);
+      this.emptyLabelNode.setPosition(new Vec3(0, 260, 0));
+
+      const transform = this.emptyLabelNode.addComponent(UITransform);
+      transform.setContentSize(new Size(640, 90));
+
+      const label = this.emptyLabelNode.addComponent(Label);
+      label.string = "暂时还没有比赛呦";
+      label.fontSize = 34;
+      label.lineHeight = 42;
+      label.horizontalAlign = Label.HorizontalAlign.CENTER;
+      label.verticalAlign = Label.VerticalAlign.CENTER;
+    }
+
+    this.emptyLabelNode.active = visible && !this.matchApiFailed;
+  }
+
+  private setErrorStateVisible(visible: boolean): void {
+    const canvas = this.node.parent;
+    if (!canvas) {
+      return;
+    }
+
+    if (!this.errorLabelNode) {
+      this.errorLabelNode = new Node("MatchApiErrorTip");
+      canvas.addChild(this.errorLabelNode);
+      this.errorLabelNode.setPosition(new Vec3(0, 260, 0));
+
+      const transform = this.errorLabelNode.addComponent(UITransform);
+      transform.setContentSize(new Size(640, 90));
+
+      const label = this.errorLabelNode.addComponent(Label);
+      label.string = "服务器链接异常，点我刷新";
+      label.fontSize = 34;
+      label.lineHeight = 42;
+      label.horizontalAlign = Label.HorizontalAlign.CENTER;
+      label.verticalAlign = Label.VerticalAlign.CENTER;
+
+      this.errorLabelNode.on(Node.EventType.TOUCH_END, this.reloadCurrentScene, this);
+    }
+
+    this.errorLabelNode.active = visible;
   }
 
   private ensureMatchItemList(): Node | null {
     const canvas = this.node.parent;
-    const matchItemList = canvas?.getChildByName("MatchItemList") ?? null;
-    if (!canvas || !matchItemList) {
+    if (!canvas) {
       return null;
     }
 
-    let scrollNode = canvas.getChildByName("MatchScrollView");
-    if (!scrollNode) {
-      scrollNode = new Node("MatchScrollView");
-      canvas.addChild(scrollNode);
-
-      const scrollTransform = scrollNode.addComponent(UITransform);
-      scrollTransform.setContentSize(new Size(710, 1280));
-
-      const scrollWidget = scrollNode.addComponent(Widget);
-      scrollWidget.isAlignLeft = true;
-      scrollWidget.isAlignRight = true;
-      scrollWidget.isAlignTop = true;
-      scrollWidget.isAlignBottom = true;
-      scrollWidget.left = 20;
-      scrollWidget.right = 20;
-      scrollWidget.top = 180;
-      scrollWidget.bottom = 80;
-      scrollWidget.alignMode = 2;
-
-      scrollNode.addComponent(Mask);
-      const scrollView = scrollNode.addComponent(ScrollView);
-      scrollView.horizontal = false;
-      scrollView.vertical = true;
-      scrollView.inertia = true;
-      scrollView.brake = 0.35;
-
-      matchItemList.removeFromParent();
-      scrollNode.addChild(matchItemList);
-      scrollView.content = matchItemList;
+    const matchItemList =
+      canvas.getChildByName("MatchItemList") ??
+      canvas.getChildByName("MatchScrollView")?.getChildByName("MatchItemList") ??
+      null;
+    if (!matchItemList) {
+      return null;
     }
 
-    const scrollTransform = scrollNode.getComponent(UITransform);
-    const contentTransform =
-      matchItemList.getComponent(UITransform) ??
-      matchItemList.addComponent(UITransform);
-    // const contentWidget = matchItemList.getComponent(Widget);
-    // if (contentWidget) {
-    //   contentWidget.enabled = false;
-    // }
+    canvas.getChildByName("filterBar")?.setSiblingIndex(canvas.children.length);
 
-    // matchItemList.setScale(1, 1, 1);
-    const contentWidth = Math.max(
-      (scrollTransform?.contentSize.width ?? 710) - 20,
-      680,
-    );
-    contentTransform.setContentSize(new Size(contentWidth, 0));
+    const layout = matchItemList.getComponent(Layout);
+    if (layout) {
+      layout.enabled = false;
+    }
+
+    let mask = matchItemList.getComponent(Mask);
+    if (!mask) {
+      mask = matchItemList.addComponent(Mask);
+    }
+    mask.enabled = true;
+
+    let scrollView = matchItemList.getComponent(ScrollView);
+    if (!scrollView) {
+      scrollView = matchItemList.addComponent(ScrollView);
+    }
+    scrollView.horizontal = false;
+    scrollView.vertical = true;
+    scrollView.inertia = false;
+    scrollView.brake = 0.35;
+    scrollView.elastic = true;
+    scrollView.cancelInnerEvents = true;
+
+    const scrollBar = matchItemList.getComponent(ScrollBar);
+    if (scrollBar) {
+      scrollView.verticalScrollBar = scrollBar;
+    }
+
+    let content = matchItemList.getChildByName(MATCH_ITEM_CONTENT_NAME);
+    if (!content) {
+      content = new Node(MATCH_ITEM_CONTENT_NAME);
+      matchItemList.addChild(content);
+    }
+
+    let contentTransform = content.getComponent(UITransform);
+    if (!contentTransform) {
+      contentTransform = content.addComponent(UITransform);
+    }
+
+    const viewportTransform = matchItemList.getComponent(UITransform);
+    const viewportWidth = viewportTransform?.contentSize.width ?? 0;
+    const viewportHeight = viewportTransform?.contentSize.height ?? 0;
     contentTransform.setAnchorPoint(0.5, 1);
-    matchItemList.setPosition(
-      new Vec3(0, (scrollTransform?.contentSize.height ?? 1280) / 2, 0),
-    );
+    contentTransform.setContentSize(new Size(viewportWidth, viewportHeight));
+    content.setPosition(new Vec3(0, viewportHeight / 2, 0));
 
-    let layout = matchItemList.getComponent(Layout);
-    if (!layout) {
-      layout = matchItemList.addComponent(Layout);
+    scrollView.content = content;
+    return content;
+  }
+
+  private positionMatchCardBeforeLayout(
+    matchItemList: Node,
+    card: Node,
+    index: number,
+  ): void {
+    const cardTransform = card.getComponent(UITransform);
+    const cardHeight = cardTransform?.contentSize.height ?? 0;
+    const spacing = MATCH_ITEM_SPACING_Y;
+    const y = -(cardHeight / 2) - index * (cardHeight + spacing);
+
+    card.setPosition(new Vec3(0, y, 0));
+  }
+
+  private updateMatchItemContentSize(
+    matchItemContent: Node,
+    itemCount: number,
+    sampleCard: Node | null,
+  ): void {
+    const viewport = matchItemContent.parent;
+    const viewportTransform = viewport?.getComponent(UITransform);
+    const contentTransform = matchItemContent.getComponent(UITransform);
+    const cardHeight =
+      sampleCard?.getComponent(UITransform)?.contentSize.height ?? 0;
+    const viewportWidth = viewportTransform?.contentSize.width ?? 0;
+    const viewportHeight = viewportTransform?.contentSize.height ?? 0;
+    const totalHeight =
+      itemCount > 0
+        ? itemCount * cardHeight + (itemCount - 1) * MATCH_ITEM_SPACING_Y
+        : viewportHeight;
+
+    contentTransform?.setContentSize(
+      new Size(viewportWidth, Math.max(viewportHeight, totalHeight)),
+    );
+    matchItemContent.setPosition(new Vec3(0, viewportHeight / 2, 0));
+  }
+
+  private resetMatchListScrollToTop(matchItemContent: Node): void {
+    const scrollView = matchItemContent.parent?.getComponent(ScrollView);
+    if (!scrollView) {
+      return;
     }
 
-    layout.type = Layout.Type.VERTICAL;
-    layout.resizeMode = Layout.ResizeMode.CONTAINER;
-    layout.verticalDirection = Layout.VerticalDirection.TOP_TO_BOTTOM;
-    layout.horizontalDirection = Layout.HorizontalDirection.LEFT_TO_RIGHT;
-    layout.spacingY = 50;
-    layout.paddingTop = 0;
-    layout.paddingBottom = 0;
-    layout.paddingLeft = 0;
-    layout.paddingRight = 0;
-    layout.affectedByScale = false;
+    scrollView.stopAutoScroll();
+    this.scheduleOnce(() => {
+      if (!isValid(scrollView)) {
+        return;
+      }
 
-    return matchItemList;
+      scrollView.stopAutoScroll();
+      scrollView.scrollToTop(0);
+    }, 0);
   }
 
   private loadMatchItemPrefab(): Promise<Prefab> {
+    return this.loadPrefab("prefabs/MatchListItem");
+  }
+
+  private loadSegmentedControlPrefab(): Promise<Prefab> {
+    return this.loadPrefab("prefabs/SegmentedControl");
+  }
+
+  private loadPrefab(path: string): Promise<Prefab> {
     return new Promise((resolve, reject) => {
-      resources.load("prefabs/MatchListItem", Prefab, (err, asset) => {
+      resources.load(path, Prefab, (err, asset) => {
         if (err || !asset) {
-          reject(err);
+          reject(err ?? new Error(`Failed to load prefab at ${path}`));
           return;
         }
 
         resolve(asset);
       });
     });
+  }
+
+  private async loadMatchesFromApi(): Promise<MatchInfo[]> {
+    try {
+      this.matchApiFailed = false;
+      return this.sortMatchesByTime(await fetchMatchList());
+    } catch (error) {
+      this.matchApiFailed = true;
+      console.error(
+        "[PredictionListController] Failed to fetch matches from API",
+        error,
+      );
+      return [];
+    }
+  }
+
+  private sortMatchesByTime(matches: MatchInfo[]): MatchInfo[] {
+    return [...matches].sort(
+      (left, right) => this.parseMatchTime(left.time) - this.parseMatchTime(right.time),
+    );
+  }
+
+  private parseMatchTime(time: string): number {
+    const matched = time.match(/^(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})$/);
+    if (!matched) {
+      return Number.MAX_SAFE_INTEGER;
+    }
+
+    const [, month, day, hour, minute] = matched;
+    return (
+      Number(month) * 1000000 +
+      Number(day) * 10000 +
+      Number(hour) * 100 +
+      Number(minute)
+    );
+  }
+
+  private reloadCurrentScene(): void {
+    const sceneName = director.getScene()?.name ?? "PredictionList";
+    director.loadScene(sceneName);
   }
 
   private setLabel(root: Node, path: string, value: string): void {
@@ -340,7 +517,7 @@ export class PredictionListController extends Component {
     }
   }
 
-  private bindActionButton(card: Node, example: MatchExample): void {
+  private bindActionButton(card: Node, example: MatchInfo): void {
     const actionButton = this.getNodeByPath(card, "ActionButton");
     if (!actionButton) {
       console.warn("[PredictionListController] ActionButton not found");
@@ -358,6 +535,7 @@ export class PredictionListController extends Component {
         matchId: example.matchId,
         homeCountryId: example.homeFlagCode,
         awayCountryId: example.awayFlagCode,
+        entryScene: "PredictionList",
       });
 
       director.loadScene("DeckSelection", (err) => {

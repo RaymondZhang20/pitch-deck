@@ -11,6 +11,7 @@ import {
   Node,
   Prefab,
   resources,
+  RichText,
   Sprite,
   Tween,
   tween,
@@ -24,6 +25,7 @@ import { clearSelectedCardId, getSelectedCardId } from "./CardSelectionState";
 import { selectViewedCard, discardViewedCard } from "./DeckSelectionState";
 import { setFlagByCode } from "./FlagUtils";
 import { GameCard } from "./GameCard";
+import { withLoadingOverlay } from "./LoadingOverlay";
 import { getSelectedMatchInfo } from "./MatchSelectionState";
 
 const { ccclass } = _decorator;
@@ -64,7 +66,12 @@ export class CardSelectionController extends Component {
   private dragStartCardX = 0;
 
   onLoad(): void {
-    void this.render();
+    const canvas = this.node.parent;
+    if (!canvas) {
+      return;
+    }
+
+    void withLoadingOverlay(canvas, () => this.render());
   }
 
   onDestroy(): void {
@@ -113,23 +120,22 @@ export class CardSelectionController extends Component {
       56,
       true,
       90,
-      -360,
+      540,
     );
     this.contentNode = this.createTextBlock(
       content,
       card.content,
       36,
       false,
-      140,
-      -480,
+      260,
+      -320,
     );
-    this.effectNode = this.createTextBlock(
+    this.effectNode = this.createEffectTextBlock(
       content,
       card.effect,
       34,
-      false,
-      120,
-      -620,
+      160,
+      -540,
     );
     this.setButtonsVisible(canvas, true);
     this.bindButtons(canvas);
@@ -634,7 +640,39 @@ export class CardSelectionController extends Component {
     label.color = new Color(255, 255, 255, 255);
     label.isBold = bold;
     label.enableWrapText = true;
+    label.overflow = Label.Overflow.RESIZE_HEIGHT;
     label.horizontalAlign = Label.HorizontalAlign.CENTER;
+
+    return node;
+  }
+
+  private createEffectTextBlock(
+    parent: Node,
+    text: string,
+    fontSize: number,
+    height: number,
+    y: number,
+  ): Node {
+    const node = new Node("EffectTextBlock");
+    parent.addChild(node);
+    node.setPosition(0, y, 0);
+
+    const transform = node.addComponent(UITransform);
+    transform.setContentSize(638, height);
+
+    const richText = node.addComponent(RichText);
+    richText.string = formatEffectRichText(text);
+    richText.fontSize = fontSize;
+    richText.lineHeight = fontSize + 12;
+    richText.maxWidth = 638;
+    (richText as unknown as { fontColor?: Color }).fontColor = new Color(
+      255,
+      255,
+      255,
+      255,
+    );
+    (richText as unknown as { horizontalAlign?: number }).horizontalAlign =
+      Label.HorizontalAlign.CENTER;
 
     return node;
   }
@@ -655,6 +693,20 @@ export class CardSelectionController extends Component {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function formatEffectRichText(text: string): string {
+  const escapedText = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  return escapedText
+    .replace(/([+-](?:\d+|？？？|\?\?\?))/g, (matchedText) => {
+      const color = matchedText.startsWith("-") ? "#ff5a5f" : "#58e27a";
+      return `<color=${color}>${matchedText}</color>`;
+    })
+    .replace(/\n/g, "<br/>");
 }
 
 function easeSin(progress: number): number {

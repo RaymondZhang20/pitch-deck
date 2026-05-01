@@ -24,12 +24,22 @@ export type DeckSelectionState = {
   pendingDeckCompleteNotice: boolean;
 };
 
+export type SavedDeckState = {
+  matchId: string;
+  selectedLimit: number;
+  selectedCards: SelectedCardRecord[];
+  type: "prediction" | "spoiler";
+  buff: string[];
+  matchStatusKeyAtSubmit: "not-started" | "in-progress" | "finished";
+};
+
 const INITIAL_VISIBLE_CARD_COUNT = 9;
 const REDEAL_CARD_COUNT = 9;
 const DEFAULT_SELECTED_LIMIT = 4;
 const DEFAULT_REDRAW_COUNT = 6;
 
 let state: DeckSelectionState | null = null;
+const savedDeckStates = new Map<string, SavedDeckState>();
 
 export function ensureDeckSelectionState(
   matchInfo: SelectedMatchInfo | null,
@@ -71,6 +81,42 @@ export function getDeckSelectionState(): DeckSelectionState | null {
 
 export function clearDeckSelectionState(): void {
   state = null;
+}
+
+export function hasSavedDeckState(matchId: string): boolean {
+  const savedState = savedDeckStates.get(matchId);
+  return !!savedState && savedState.selectedCards.length >= savedState.selectedLimit;
+}
+
+export function getSelectedCardsForMatch(
+  matchId: string,
+): readonly SelectedCardRecord[] {
+  const savedState = savedDeckStates.get(matchId);
+  if (savedState) {
+    return savedState.selectedCards;
+  }
+
+  if (state?.matchId === matchId) {
+    return state.selectedCards;
+  }
+
+  return [];
+}
+
+export function setSavedDeckSubmissionMeta(
+  matchId: string,
+  matchStatusKey: "not-started" | "in-progress" | "finished",
+  scoreType: "prediction" | "spoiler",
+  buff: string[],
+): void {
+  const savedState = savedDeckStates.get(matchId);
+  if (!savedState) {
+    return;
+  }
+
+  savedState.matchStatusKeyAtSubmit = matchStatusKey;
+  savedState.type = scoreType;
+  savedState.buff = [...buff];
 }
 
 export function getDeckSlots(): readonly DeckCardSlot[] {
@@ -217,6 +263,7 @@ function processViewedCard(
       cardId,
       countryCode,
     });
+    saveCurrentDeckStateIfComplete();
   } else {
     state.discardedCardIds.push(cardId);
   }
@@ -231,4 +278,19 @@ function shuffle(values: number[]): number[] {
   }
 
   return values;
+}
+
+function saveCurrentDeckStateIfComplete(): void {
+  if (!state || state.selectedCards.length < state.selectedLimit) {
+    return;
+  }
+
+  savedDeckStates.set(state.matchId, {
+    matchId: state.matchId,
+    selectedLimit: state.selectedLimit,
+    selectedCards: state.selectedCards.map((card) => ({ ...card })),
+    type: "prediction",
+    buff: [],
+    matchStatusKeyAtSubmit: "not-started",
+  });
 }
