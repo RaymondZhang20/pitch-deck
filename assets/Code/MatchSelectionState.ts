@@ -1,7 +1,10 @@
+export type MatchEntryScene = "PredictionList" | "HistoryList";
+
 export type SelectedMatchInfo = {
   matchId: string;
   homeCountryId: string;
   awayCountryId: string;
+  entryScene: MatchEntryScene;
 };
 
 let selectedMatchInfo: SelectedMatchInfo | null = null;
