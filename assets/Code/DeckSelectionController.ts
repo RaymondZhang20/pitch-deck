@@ -10,7 +10,10 @@ import {
   Mask,
   Node,
   Prefab,
+  Quat,
   resources,
+  tween,
+  Tween,
   UITransform,
   Vec3,
 } from "cc";
@@ -22,7 +25,10 @@ import { withLoadingOverlay } from "./LoadingOverlay";
 import { fetchMatchById, MatchStatusKey } from "./MatchApi";
 import {
   clearDeckSelectionState,
+  consumeDealAnimation,
   consumeDeckCompleteNotice,
+  consumePendingDiscardedFlyOrigin,
+  consumePendingSelectedFlyOrigin,
   ensureDeckSelectionState,
   getDeckSlots,
   getDiscardedCardIds,
@@ -41,9 +47,29 @@ const { ccclass } = _decorator;
 const GRID_COLUMNS = 3;
 const CARD_ASPECT_RATIO = 150 / 223;
 
+// 发牌动画参数
+const DEAL_STAGGER = 0.07;
+const DEAL_DURATION = 0.35;
+const DEAL_START_SCALE = 0.4;
+const DEAL_START_ROTATION_Z = -15;
+
+// 飞行动画通用参数
+const FLY_LIFT_DURATION = 0.18;
+const FLY_LIFT_SCALE = 1.12;
+const FLY_HOLD_DURATION = 0.1;
+const FLY_TRAVEL_DURATION = 0.5;
+const SELECT_FLY_END_SCALE = 0.22;
+const DISCARD_FLY_END_SCALE = 0.18;
+const DISCARD_FLY_END_ROTATION_Z = 25;
+
+type FlyKind = "select" | "discard";
+
 @ccclass("DeckSelectionController")
 export class DeckSelectionController extends Component {
   private againMotionHandle: PulseMotionHandle | null = null;
+  private dealingTweens: Tween<Node>[] = [];
+  private flyTween: Tween<Node> | null = null;
+  private flyCardNode: Node | null = null;
 
   onLoad(): void {
     void this.renderWithLoading();
@@ -51,6 +77,8 @@ export class DeckSelectionController extends Component {
 
   onDestroy(): void {
     this.stopAgainButtonMotion();
+    this.stopDealAnimations();
+    this.stopFlyAnimation();
   }
 
   private async render(): Promise<void> {
@@ -63,7 +91,14 @@ export class DeckSelectionController extends Component {
     this.hideTitle(canvas);
     this.bindReturnButton(canvas);
     this.bindAgainButton(canvas);
-    this.renderPileNumbers(canvas);
+
+    // 消费飞行动画起点(在渲染数字前,数字需要"延迟一格")
+    const selectFlyOrigin = consumePendingSelectedFlyOrigin();
+    const discardFlyOrigin = consumePendingDiscardedFlyOrigin();
+    this.renderPileNumbers(canvas, {
+      deferSelected: selectFlyOrigin !== null,
+      deferDiscarded: discardFlyOrigin !== null,
+    });
 
     const grid = canvas.getChildByName("CardGrid");
     if (!grid) {
@@ -76,12 +111,20 @@ export class DeckSelectionController extends Component {
     this.configureGrid(grid);
     canvas.getComponent(Widget)?.updateAlignment();
     grid.getComponent(Widget)?.updateAlignment();
+
+    this.stopDealAnimations();
     grid.removeAllChildren();
 
     const { cardWidth, cardHeight, spacing } = this.computeCardMetrics(grid);
     const prefab = await this.loadPrefab("prefabs/GameCard");
     const slots = getDeckSlots();
 
+    const shouldPlayDeal = consumeDealAnimation();
+    const dealFrom = shouldPlayDeal
+      ? this.getDealStartPosition(canvas, grid)
+      : null;
+
+    let dealOrder = 0;
     for (let index = 0; index < slots.length; index += 1) {
       const slot = slots[index];
       if (typeof slot.cardId !== "number") {
@@ -91,9 +134,9 @@ export class DeckSelectionController extends Component {
       const cardId = slot.cardId;
       const cardNode = instantiate(prefab);
       grid.addChild(cardNode);
-      this.positionCardNode(
+
+      const targetPos = this.computeCardPosition(
         grid,
-        cardNode,
         index,
         cardWidth,
         cardHeight,
@@ -101,16 +144,62 @@ export class DeckSelectionController extends Component {
       );
 
       const gameCard = cardNode.getComponent(GameCard);
-      if (!gameCard) {
-        continue;
+      if (gameCard) {
+        gameCard.setCardSize(cardWidth, cardHeight);
+        gameCard.setOpenSceneOnFace(true);
+        gameCard.setSideChangeHandler((side) => {
+          setSlotSide(cardId, side);
+        });
+        await gameCard.configure(cardId, slot.side);
       }
 
-      gameCard.setCardSize(cardWidth, cardHeight);
-      gameCard.setOpenSceneOnFace(true);
-      gameCard.setSideChangeHandler((side) => {
-        setSlotSide(cardId, side);
-      });
-      await gameCard.configure(cardId, slot.side);
+      if (shouldPlayDeal && dealFrom) {
+        this.playDealAnimation(cardNode, dealFrom, targetPos, dealOrder);
+        dealOrder += 1;
+      } else {
+        cardNode.setPosition(targetPos);
+        cardNode.setScale(1, 1, 1);
+        const idRot = new Quat();
+        Quat.fromEuler(idRot, 0, 0, 0);
+        cardNode.setRotation(idRot);
+      }
+    }
+
+    // 飞行动画(选中 / 弃牌)
+    if (selectFlyOrigin) {
+      await this.playFlyAnimation(
+        canvas,
+        grid,
+        "select",
+        selectFlyOrigin.cardId,
+        selectFlyOrigin.slotIndex,
+        cardWidth,
+        cardHeight,
+        spacing,
+      );
+      this.setLabelText(
+        canvas,
+        "SelectedPile/Number",
+        `${getSelectedCardIds().length}/${getSelectedLimit()}`,
+      );
+    }
+
+    if (discardFlyOrigin) {
+      await this.playFlyAnimation(
+        canvas,
+        grid,
+        "discard",
+        discardFlyOrigin.cardId,
+        discardFlyOrigin.slotIndex,
+        cardWidth,
+        cardHeight,
+        spacing,
+      );
+      this.setLabelText(
+        canvas,
+        "DiscardPile/Number",
+        `${getDiscardedCardIds().length}`,
+      );
     }
 
     if (consumeDeckCompleteNotice()) {
@@ -163,18 +252,31 @@ export class DeckSelectionController extends Component {
     });
   }
 
-  private renderPileNumbers(canvas: Node): void {
+  private renderPileNumbers(
+    canvas: Node,
+    deferOptions: {
+      deferSelected?: boolean;
+      deferDiscarded?: boolean;
+    } = {},
+  ): void {
     this.setLabelText(canvas, "DrawPile/Number", `${getDrawPileCount()}`);
+
+    const selectedCount = getSelectedCardIds().length;
+    const displayedSelected = deferOptions.deferSelected
+      ? Math.max(0, selectedCount - 1)
+      : selectedCount;
     this.setLabelText(
       canvas,
       "SelectedPile/Number",
-      `${getSelectedCardIds().length}/${getSelectedLimit()}`,
+      `${displayedSelected}/${getSelectedLimit()}`,
     );
-    this.setLabelText(
-      canvas,
-      "DiscardPile/Number",
-      `${getDiscardedCardIds().length}`,
-    );
+
+    const discardedCount = getDiscardedCardIds().length;
+    const displayedDiscarded = deferOptions.deferDiscarded
+      ? Math.max(0, discardedCount - 1)
+      : discardedCount;
+    this.setLabelText(canvas, "DiscardPile/Number", `${displayedDiscarded}`);
+
     this.setLabelText(canvas, "againBtn/Number", `${getRedrawRemaining()}`);
 
     const againButton = canvas.getChildByName("againBtn");
@@ -260,6 +362,192 @@ export class DeckSelectionController extends Component {
     this.againMotionHandle = stopPulseMotion(this.againMotionHandle);
   }
 
+  // ============== 发牌动画 ==============
+
+  private getDealStartPosition(canvas: Node, grid: Node): Vec3 {
+    const drawPile = canvas.getChildByName("DrawPile");
+    const gridTransform = grid.getComponent(UITransform);
+    if (!drawPile || !gridTransform) {
+      return new Vec3(0, 0, 0);
+    }
+
+    const worldPos = drawPile.getWorldPosition();
+    const local = new Vec3();
+    gridTransform.convertToNodeSpaceAR(worldPos, local);
+    return local;
+  }
+
+  private playDealAnimation(
+    cardNode: Node,
+    from: Vec3,
+    to: Vec3,
+    order: number,
+  ): void {
+    cardNode.setPosition(from);
+    cardNode.setScale(DEAL_START_SCALE, DEAL_START_SCALE, 1);
+
+    const startRot = new Quat();
+    Quat.fromEuler(startRot, 0, 0, DEAL_START_ROTATION_Z);
+    const endRot = new Quat();
+    Quat.fromEuler(endRot, 0, 0, 0);
+    cardNode.setRotation(startRot);
+
+    const cardTween = tween(cardNode)
+      .delay(order * DEAL_STAGGER)
+      .parallel(
+        tween<Node>().to(
+          DEAL_DURATION,
+          { position: to },
+          { easing: "cubicOut" },
+        ),
+        tween<Node>().to(
+          DEAL_DURATION,
+          { scale: new Vec3(1, 1, 1) },
+          { easing: "backOut" },
+        ),
+        tween<Node>().to(
+          DEAL_DURATION,
+          { rotation: endRot },
+          { easing: "cubicOut" },
+        ),
+      )
+      .call(() => {
+        const idx = this.dealingTweens.indexOf(cardTween);
+        if (idx >= 0) {
+          this.dealingTweens.splice(idx, 1);
+        }
+      })
+      .start();
+
+    this.dealingTweens.push(cardTween);
+  }
+
+  private stopDealAnimations(): void {
+    for (const t of this.dealingTweens) {
+      t.stop();
+    }
+    this.dealingTweens = [];
+  }
+
+  // ============== 飞行动画(选中 / 弃牌) ==============
+
+  private async playFlyAnimation(
+    canvas: Node,
+    grid: Node,
+    kind: FlyKind,
+    cardId: number,
+    slotIndex: number,
+    cardWidth: number,
+    cardHeight: number,
+    spacing: number,
+  ): Promise<void> {
+    const targetPileName =
+      kind === "select" ? "SelectedPile" : "DiscardPile";
+    const targetPile = canvas.getChildByName(targetPileName);
+    const canvasTransform = canvas.getComponent(UITransform);
+    const gridTransform = grid.getComponent(UITransform);
+    if (!targetPile || !canvasTransform || !gridTransform) {
+      return;
+    }
+
+    // 起点:槽位的网格局部坐标 → canvas 局部坐标
+    const slotLocalInGrid = this.computeCardPosition(
+      grid,
+      slotIndex,
+      cardWidth,
+      cardHeight,
+      spacing,
+    );
+    const slotWorld = new Vec3();
+    gridTransform.convertToWorldSpaceAR(slotLocalInGrid, slotWorld);
+    const startInCanvas = new Vec3();
+    canvasTransform.convertToNodeSpaceAR(slotWorld, startInCanvas);
+
+    // 终点:目标堆的 canvas 局部坐标
+    const targetWorld = targetPile.getWorldPosition();
+    const targetInCanvas = new Vec3();
+    canvasTransform.convertToNodeSpaceAR(targetWorld, targetInCanvas);
+
+    // 实例化飞行卡牌(挂在 canvas 上以避免 grid Mask 裁剪)
+    const prefab = await this.loadPrefab("prefabs/GameCard");
+    const flyingCard = instantiate(prefab);
+    canvas.addChild(flyingCard);
+    flyingCard.setSiblingIndex(canvas.children.length - 1);
+
+    const gameCard = flyingCard.getComponent(GameCard);
+    if (gameCard) {
+      gameCard.setCardSize(cardWidth, cardHeight);
+      gameCard.setOpenSceneOnFace(false);
+      gameCard.setSideChangeHandler(null);
+      await gameCard.configure(cardId, "face");
+    }
+
+    flyingCard.setPosition(startInCanvas);
+    flyingCard.setScale(1, 1, 1);
+    const startRot = new Quat();
+    Quat.fromEuler(startRot, 0, 0, 0);
+    flyingCard.setRotation(startRot);
+
+    this.flyCardNode = flyingCard;
+
+    const endScale =
+      kind === "select" ? SELECT_FLY_END_SCALE : DISCARD_FLY_END_SCALE;
+    const endRotZ = kind === "select" ? 0 : DISCARD_FLY_END_ROTATION_Z;
+    const endRot = new Quat();
+    Quat.fromEuler(endRot, 0, 0, endRotZ);
+
+    await new Promise<void>((resolve) => {
+      const t = tween(flyingCard)
+        .to(
+          FLY_LIFT_DURATION,
+          { scale: new Vec3(FLY_LIFT_SCALE, FLY_LIFT_SCALE, 1) },
+          { easing: "backOut" },
+        )
+        .delay(FLY_HOLD_DURATION)
+        .parallel(
+          tween<Node>().to(
+            FLY_TRAVEL_DURATION,
+            { position: targetInCanvas },
+            { easing: "cubicIn" },
+          ),
+          tween<Node>().to(
+            FLY_TRAVEL_DURATION,
+            { scale: new Vec3(endScale, endScale, 1) },
+            { easing: "cubicIn" },
+          ),
+          tween<Node>().to(
+            FLY_TRAVEL_DURATION,
+            { rotation: endRot },
+            { easing: "cubicIn" },
+          ),
+        )
+        .call(() => {
+          if (flyingCard.isValid) {
+            flyingCard.destroy();
+          }
+          this.flyCardNode = null;
+          this.flyTween = null;
+          resolve();
+        })
+        .start();
+
+      this.flyTween = t;
+    });
+  }
+
+  private stopFlyAnimation(): void {
+    if (this.flyTween) {
+      this.flyTween.stop();
+      this.flyTween = null;
+    }
+    if (this.flyCardNode && this.flyCardNode.isValid) {
+      this.flyCardNode.destroy();
+    }
+    this.flyCardNode = null;
+  }
+
+  // ============== 布局相关 ==============
+
   private computeCardMetrics(grid: Node): {
     cardWidth: number;
     cardHeight: number;
@@ -291,14 +579,13 @@ export class DeckSelectionController extends Component {
     return { cardWidth, cardHeight, spacing };
   }
 
-  private positionCardNode(
+  private computeCardPosition(
     grid: Node,
-    cardNode: Node,
     slotIndex: number,
     cardWidth: number,
     cardHeight: number,
     spacing: number,
-  ): void {
+  ): Vec3 {
     const gridTransform = grid.getComponent(UITransform);
     const gridHeight = gridTransform?.contentSize.height ?? 0;
     const rowCount = Math.ceil(getDeckSlots().length / GRID_COLUMNS);
@@ -313,7 +600,7 @@ export class DeckSelectionController extends Component {
     const y = startY - row * (cardHeight + spacing);
     const verticalOffset = gridHeight / 2 - totalHeight / 2;
 
-    cardNode.setPosition(new Vec3(x, y + verticalOffset, 0));
+    return new Vec3(x, y + verticalOffset, 0);
   }
 
   private getNodeByPath(root: Node, path: string): Node | null {
