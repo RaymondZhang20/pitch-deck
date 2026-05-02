@@ -13,6 +13,11 @@ export type SelectedCardRecord = {
   countryCode: string;
 };
 
+export type PendingFlyOrigin = {
+  cardId: number;
+  slotIndex: number;
+};
+
 export type DeckSelectionState = {
   matchId: string;
   selectedLimit: number;
@@ -22,6 +27,9 @@ export type DeckSelectionState = {
   discardedCardIds: number[];
   redrawRemaining: number;
   pendingDeckCompleteNotice: boolean;
+  pendingDealAnimation: boolean;
+  pendingSelectedFlyOrigin: PendingFlyOrigin | null;
+  pendingDiscardedFlyOrigin: PendingFlyOrigin | null;
 };
 
 export type SavedDeckState = {
@@ -70,6 +78,9 @@ export function ensureDeckSelectionState(
     discardedCardIds: [],
     redrawRemaining: DEFAULT_REDRAW_COUNT,
     pendingDeckCompleteNotice: false,
+    pendingDealAnimation: true,
+    pendingSelectedFlyOrigin: null,
+    pendingDiscardedFlyOrigin: null,
   };
 
   return state;
@@ -178,16 +189,36 @@ export function selectViewedCard(
     return false;
   }
 
+  // 先记录原槽位,因为 processViewedCard 会清空槽位
+  const slotIndex = state.slots.findIndex((item) => item.cardId === cardId);
+
   const didProcess = processViewedCard(cardId, "select", countryCode);
-  if (didProcess && state.selectedCards.length >= state.selectedLimit) {
-    state.pendingDeckCompleteNotice = true;
+  if (didProcess) {
+    if (slotIndex >= 0) {
+      state.pendingSelectedFlyOrigin = { cardId, slotIndex };
+    }
+    if (state.selectedCards.length >= state.selectedLimit) {
+      state.pendingDeckCompleteNotice = true;
+    }
   }
 
   return didProcess;
 }
 
 export function discardViewedCard(cardId: number): boolean {
-  return processViewedCard(cardId, "discard");
+  if (!state) {
+    return false;
+  }
+
+  // 先记录原槽位
+  const slotIndex = state.slots.findIndex((item) => item.cardId === cardId);
+
+  const didProcess = processViewedCard(cardId, "discard");
+  if (didProcess && slotIndex >= 0) {
+    state.pendingDiscardedFlyOrigin = { cardId, slotIndex };
+  }
+
+  return didProcess;
 }
 
 export function consumeDeckCompleteNotice(): boolean {
@@ -197,6 +228,35 @@ export function consumeDeckCompleteNotice(): boolean {
 
   state.pendingDeckCompleteNotice = false;
   return true;
+}
+
+export function consumeDealAnimation(): boolean {
+  if (!state?.pendingDealAnimation) {
+    return false;
+  }
+
+  state.pendingDealAnimation = false;
+  return true;
+}
+
+export function consumePendingSelectedFlyOrigin(): PendingFlyOrigin | null {
+  if (!state || state.pendingSelectedFlyOrigin === null) {
+    return null;
+  }
+
+  const origin = state.pendingSelectedFlyOrigin;
+  state.pendingSelectedFlyOrigin = null;
+  return origin;
+}
+
+export function consumePendingDiscardedFlyOrigin(): PendingFlyOrigin | null {
+  if (!state || state.pendingDiscardedFlyOrigin === null) {
+    return null;
+  }
+
+  const origin = state.pendingDiscardedFlyOrigin;
+  state.pendingDiscardedFlyOrigin = null;
+  return origin;
 }
 
 export function redealCards(): boolean {
@@ -225,6 +285,7 @@ export function redealCards(): boolean {
   }
 
   state.redrawRemaining -= 1;
+  state.pendingDealAnimation = true;
   return true;
 }
 
