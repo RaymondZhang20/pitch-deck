@@ -374,7 +374,7 @@ export class DeckSelectionController extends Component {
         error,
       );
       return {
-        message: "卡组构建完毕，点击查看你的分数",
+        message: "卡组构建完毕了，点击查看你的分数",
         targetScene: "ResultView",
       };
     }
